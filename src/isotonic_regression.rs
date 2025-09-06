@@ -1,8 +1,8 @@
+use crate::coordinate::Coordinate;
+use crate::point::{interpolate_two_points, Point};
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
-use crate::coordinate::Coordinate;
-use crate::point::{Point, interpolate_two_points};
 
 /// Errors that can occur during isotonic regression
 #[derive(Error, Debug)]
@@ -30,8 +30,7 @@ struct Centroid<T: Coordinate> {
     sum_weight: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[allow(dead_code)]
 /// Specifies the direction of the isotonic regression.
 pub enum Direction {
@@ -47,7 +46,13 @@ impl<T: Coordinate + Display> Display for IsotonicRegression<T> {
         writeln!(f, "\tdirection: {:?},", self.direction)?;
         writeln!(f, "\tpoints:")?;
         for point in &self.points {
-            writeln!(f, "\t\t{}\t{:.2}\t{:.2}", point.x(), point.y(), point.weight())?;
+            writeln!(
+                f,
+                "\t\t{}\t{:.2}\t{:.2}",
+                point.x(),
+                point.y(),
+                point.weight()
+            )?;
         }
         writeln!(f, "\tcentroid_point:")?;
         writeln!(
@@ -77,7 +82,9 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
     /// assert_eq!(regression.get_points().len(), 3);
     /// ```
-    pub fn new_ascending(points: &[Point<T>]) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
+    pub fn new_ascending(
+        points: &[Point<T>],
+    ) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
         IsotonicRegression::new(points, Direction::Ascending, false)
     }
 
@@ -97,7 +104,9 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// let regression = IsotonicRegression::new_descending(&points).unwrap();
     /// assert_eq!(regression.get_points().len(), 3);
     /// ```
-    pub fn new_descending(points: &[Point<T>]) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
+    pub fn new_descending(
+        points: &[Point<T>],
+    ) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
         IsotonicRegression::new(points, Direction::Descending, false)
     }
 
@@ -120,14 +129,27 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// let regression = IsotonicRegression::new(&points, Direction::Ascending, false).unwrap();
     /// assert_eq!(regression.get_points().len(), 3);
     /// ```
-    pub fn new(points: &[Point<T>], direction: Direction, intersect_origin: bool) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
-        let (sum_x, sum_y, sum_weight) = points.iter().try_fold((T::zero(), T::zero(), 0.0), |(sx, sy, sw), point| {
-            if intersect_origin && (point.x().is_sign_negative() || point.y().is_sign_negative()) {
-                Err(IsotonicRegressionError::NegativePointWithIntersectOrigin)
-            } else {
-                Ok((sx + *point.x() * T::from_float(point.weight()), sy + *point.y() * T::from_float(point.weight()), sw + point.weight()))
-            }
-        })?;
+    pub fn new(
+        points: &[Point<T>],
+        direction: Direction,
+        intersect_origin: bool,
+    ) -> Result<IsotonicRegression<T>, IsotonicRegressionError> {
+        let (sum_x, sum_y, sum_weight) =
+            points
+                .iter()
+                .try_fold((T::zero(), T::zero(), 0.0), |(sx, sy, sw), point| {
+                    if intersect_origin
+                        && (point.x().is_sign_negative() || point.y().is_sign_negative())
+                    {
+                        Err(IsotonicRegressionError::NegativePointWithIntersectOrigin)
+                    } else {
+                        Ok((
+                            sx + *point.x() * T::from_float(point.weight()),
+                            sy + *point.y() * T::from_float(point.weight()),
+                            sw + point.weight(),
+                        ))
+                    }
+                })?;
 
         let mut regression = IsotonicRegression {
             direction: direction.clone(),
@@ -271,10 +293,15 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// ```
     pub fn add_points(&mut self, points: &[Point<T>]) {
         for point in points {
-            assert!(!self.intersect_origin || 
-                (!point.x().is_sign_negative() && !point.y().is_sign_negative()), "With intersect_origin = true, all points must be >= 0 on both x and y axes" );
-            self.centroid_point.sum_x = self.centroid_point.sum_x + *point.x() * T::from_float(point.weight());
-            self.centroid_point.sum_y = self.centroid_point.sum_y + *point.y() * T::from_float(point.weight());
+            assert!(
+                !self.intersect_origin
+                    || (!point.x().is_sign_negative() && !point.y().is_sign_negative()),
+                "With intersect_origin = true, all points must be >= 0 on both x and y axes"
+            );
+            self.centroid_point.sum_x =
+                self.centroid_point.sum_x + *point.x() * T::from_float(point.weight());
+            self.centroid_point.sum_y =
+                self.centroid_point.sum_y + *point.y() * T::from_float(point.weight());
             self.centroid_point.sum_weight = self.centroid_point.sum_weight + point.weight();
         }
 
@@ -282,7 +309,6 @@ impl<T: Coordinate> IsotonicRegression<T> {
         new_points.extend_from_slice(points);
         self.points = isotonic(&new_points, self.direction.clone());
     }
-
 
     /// Remove points from the regression.
     ///
@@ -301,16 +327,23 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// ```
     pub fn remove_points(&mut self, points: &[Point<T>]) {
         for point in points {
-            assert!(!self.intersect_origin || 
-                (!point.x().is_sign_negative() && !point.y().is_sign_negative()), "With intersect_origin = true, all points must be >= 0 on both x and y axes" );
-            self.centroid_point.sum_x = self.centroid_point.sum_x - *point.x() * T::from_float(point.weight());
-            self.centroid_point.sum_y = self.centroid_point.sum_y - *point.y() * T::from_float(point.weight());
+            assert!(
+                !self.intersect_origin
+                    || (!point.x().is_sign_negative() && !point.y().is_sign_negative()),
+                "With intersect_origin = true, all points must be >= 0 on both x and y axes"
+            );
+            self.centroid_point.sum_x =
+                self.centroid_point.sum_x - *point.x() * T::from_float(point.weight());
+            self.centroid_point.sum_y =
+                self.centroid_point.sum_y - *point.y() * T::from_float(point.weight());
             self.centroid_point.sum_weight = self.centroid_point.sum_weight - point.weight();
         }
 
         let mut new_points = self.points.clone();
         for point in points {
-            if let Some(pos) = new_points.iter().position(|p| p.x() == point.x() && p.y() == point.y() && p.weight() == point.weight()) {
+            if let Some(pos) = new_points.iter().position(|p| {
+                p.x() == point.x() && p.y() == point.y() && p.weight() == point.weight()
+            }) {
                 new_points.remove(pos);
             }
         }
@@ -357,29 +390,41 @@ impl<T: Coordinate> IsotonicRegression<T> {
 fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Point<T>> {
     let mut merged_points: Vec<Point<T>> = match direction {
         Direction::Ascending => points.to_vec(),
-        Direction::Descending => points.iter().map(|p| Point::new_with_weight(*p.x(), *p.y(), p.weight())).collect(),
+        Direction::Descending => points
+            .iter()
+            .map(|p| Point::new_with_weight(*p.x(), *p.y(), p.weight()))
+            .collect(),
     };
 
     // Sort the points by x, and if x is equal, sort by y descending to ensure that points with the same x
     // get merged.
     merged_points.sort_by(|a, b| {
-        a.x().partial_cmp(b.x())
+        a.x()
+            .partial_cmp(b.x())
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.y().partial_cmp(a.y()).unwrap_or(std::cmp::Ordering::Equal))
+            .then(
+                b.y()
+                    .partial_cmp(a.y())
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
     });
 
-    let iso_points = merged_points.into_iter().fold(Vec::new(), |mut acc: Vec<Point<T>>, mut point| {
-        while let Some(last) = acc.last() {
-            if (direction == Direction::Ascending && last.y() >= point.y()) ||
-               (direction == Direction::Descending && last.y() <= point.y()) {
-                point.merge_with(&acc.pop().unwrap());
-            } else {
-                break;
-            }
-        }
-        acc.push(point);
-        acc
-    });
+    let iso_points =
+        merged_points
+            .into_iter()
+            .fold(Vec::new(), |mut acc: Vec<Point<T>>, mut point| {
+                while let Some(last) = acc.last() {
+                    if (direction == Direction::Ascending && last.y() >= point.y())
+                        || (direction == Direction::Descending && last.y() <= point.y())
+                    {
+                        point.merge_with(&acc.pop().unwrap());
+                    } else {
+                        break;
+                    }
+                }
+                acc.push(point);
+                acc
+            });
 
     match direction {
         Direction::Ascending => iso_points,
@@ -425,7 +470,9 @@ mod tests {
 
     #[test]
     fn test_add_points() {
-        let mut regression = IsotonicRegression::new_ascending(&[Point::new(0.0, 1.0), Point::new(2.0, 2.0)]).unwrap();
+        let mut regression =
+            IsotonicRegression::new_ascending(&[Point::new(0.0, 1.0), Point::new(2.0, 2.0)])
+                .unwrap();
         regression.add_points(&[Point::new(1.0, 1.5)]);
         assert_eq!(regression.get_points().len(), 3);
         assert_eq!(*regression.get_points()[1].x(), 1.0);
@@ -438,7 +485,8 @@ mod tests {
             Point::new(0.0, 1.0),
             Point::new(1.0, 2.0),
             Point::new(2.0, 3.0),
-        ]).unwrap();
+        ])
+        .unwrap();
         regression.remove_points(&[Point::new(1.0, 2.0)]);
         assert_eq!(regression.get_points().len(), 2);
         assert_eq!(*regression.get_points()[0].x(), 0.0);
