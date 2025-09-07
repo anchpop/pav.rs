@@ -1,5 +1,6 @@
 use crate::coordinate::Coordinate;
 use crate::point::{interpolate_two_points, Point};
+use eytzinger::SliceExt;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
@@ -45,7 +46,7 @@ impl<T: Coordinate + Display> Display for IsotonicRegression<T> {
         writeln!(f, "IsotonicRegression {{")?;
         writeln!(f, "\tdirection: {:?},", self.direction)?;
         writeln!(f, "\tpoints:")?;
-        for point in &self.points {
+        for point in &self.get_points_sorted() {
             writeln!(
                 f,
                 "\t\t{}\t{:.2}\t{:.2}",
@@ -151,18 +152,19 @@ impl<T: Coordinate> IsotonicRegression<T> {
                     }
                 })?;
 
-        let mut regression = IsotonicRegression {
-            direction: direction.clone(),
-            points: Vec::new(),
+        let mut isotonic_points = isotonic(points, direction.clone());
+        isotonic_points.eytzingerize(&mut eytzinger::permutation::InplacePermutator);
+
+        Ok(IsotonicRegression {
+            direction,
+            points: isotonic_points,
             centroid_point: Centroid {
                 sum_x,
                 sum_y,
                 sum_weight,
             },
             intersect_origin,
-        };
-        regression.add_points(points);
-        Ok(regression)
+        })
     }
 
     /// Find the _y_ point at position `at_x` or None if the regression is empty.
@@ -191,35 +193,48 @@ impl<T: Coordinate> IsotonicRegression<T> {
         let interpolation = if self.points.len() == 1 {
             *self.points[0].y()
         } else {
-            let pos = self
+            let (lte, gt) = self
                 .points
-                .binary_search_by(|p| p.x().partial_cmp(&at_x).unwrap());
-            match pos {
-                Ok(ix) => *self.points[ix].y(),
-                Err(ix) => {
-                    if ix < 1 {
-                        if self.intersect_origin {
-                            interpolate_two_points(
-                                &Point::new(T::zero(), T::zero()),
-                                self.points.first().unwrap(),
-                                at_x,
-                            )
-                        } else {
-                            interpolate_two_points(
-                                self.points.first().unwrap(),
-                                &self.get_centroid_point().unwrap(),
-                                at_x,
-                            )
-                        }
-                    } else if ix >= self.points.len() {
+                .eytzinger_interpolative_search_by(|p| p.x().partial_cmp(&at_x).unwrap());
+
+            match (lte, gt) {
+                // Found exact match or need to interpolate between two points
+                (Some(lower), Some(upper)) => {
+                    interpolate_two_points(&self.points[lower], &self.points[upper], at_x)
+                }
+                // Requested point meets or exceeds the upper bound
+                (Some(upper), None) => {
+                     // at_x is beyond the last point - interpolate with centroid
+                     interpolate_two_points(
+                        &self.get_centroid_point().unwrap(),
+                        &self.points[upper],
+                        at_x,
+                    )
+                }
+                // Requested point is below the lower bound
+                (None, Some(lower)) => {
+                    // at_x is before the first point
+                    if self.intersect_origin {
                         interpolate_two_points(
-                            &self.get_centroid_point().unwrap(),
-                            self.points.last().unwrap(),
+                            &Point::new(T::zero(), T::zero()),
+                            &self.points[lower],
                             at_x,
                         )
                     } else {
-                        interpolate_two_points(&self.points[ix - 1], &self.points[ix], at_x)
+                        interpolate_two_points(
+                            &self.points[lower],
+                            &self.get_centroid_point().unwrap(),
+                            at_x,
+                        )
                     }
+                }
+                // Should never happen - only possible if the slice is empty, which we already checked
+                (None, None) => {
+                    debug_assert!(
+                        false,
+                        "Got None, None from eytzinger_interpolative_search_by on non-empty slice"
+                    );
+                    return None;
                 }
             }
         };
@@ -227,7 +242,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
         Some(interpolation)
     }
 
-    /// Retrieve the points that make up the isotonic regression.
+    /// Retrieve the points that make up the isotonic regression. The points are NOT sorted by x value - they are in eytzinger order.
     ///
     /// # Examples
     ///
@@ -245,6 +260,13 @@ impl<T: Coordinate> IsotonicRegression<T> {
     /// ```
     pub fn get_points(&self) -> &[Point<T>] {
         &self.points
+    }
+
+    /// Retrieve the points that make up the isotonic regression, sorted by x value.
+    pub fn get_points_sorted(&self) -> Vec<Point<T>> {
+        let mut points = self.points.clone();
+        points.sort_by(|a, b| a.x().partial_cmp(b.x()).unwrap());
+        points
     }
 
     /// Retrieve the mean point of the original point set.
@@ -308,6 +330,8 @@ impl<T: Coordinate> IsotonicRegression<T> {
         let mut new_points = self.points.clone();
         new_points.extend_from_slice(points);
         self.points = isotonic(&new_points, self.direction.clone());
+        self.points
+            .eytzingerize(&mut eytzinger::permutation::InplacePermutator);
     }
 
     /// Remove points from the regression.
@@ -348,6 +372,8 @@ impl<T: Coordinate> IsotonicRegression<T> {
             }
         }
         self.points = isotonic(&new_points, self.direction.clone());
+        self.points
+            .eytzingerize(&mut eytzinger::permutation::InplacePermutator);
     }
 
     /// Returns the number of points in the regression.
@@ -364,7 +390,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// assert_eq!(regression.len(), 8);
+    /// assert_eq!(regression.len(), 4);
     /// ```
     pub fn len(&self) -> usize {
         self.centroid_point.sum_weight.round() as usize
@@ -446,10 +472,10 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(points).unwrap();
-        assert_eq!(regression.get_points().len(), 3);
-        assert_eq!(*regression.get_points()[0].y(), 1.0);
-        assert_eq!(*regression.get_points()[1].y(), 1.75);
-        assert_eq!(*regression.get_points()[2].y(), 3.0);
+        assert_eq!(regression.get_points_sorted().len(), 3);
+        assert_eq!(*regression.get_points_sorted()[0].y(), 1.0);
+        assert_eq!(*regression.get_points_sorted()[1].y(), 1.75);
+        assert_eq!(*regression.get_points_sorted()[2].y(), 3.0);
     }
 
     #[test]
@@ -462,10 +488,10 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_descending(points).unwrap();
-        assert_eq!(regression.get_points().len(), 3);
-        assert_eq!(*regression.get_points()[0].y(), 3.0);
-        assert_eq!(*regression.get_points()[1].y(), 2.25);
-        assert_eq!(*regression.get_points()[2].y(), 1.0);
+        assert_eq!(regression.get_points_sorted().len(), 3);
+        assert_eq!(*regression.get_points_sorted()[0].y(), 3.0);
+        assert_eq!(*regression.get_points_sorted()[1].y(), 2.25);
+        assert_eq!(*regression.get_points_sorted()[2].y(), 1.0);
     }
 
     #[test]
@@ -474,9 +500,9 @@ mod tests {
             IsotonicRegression::new_ascending(&[Point::new(0.0, 1.0), Point::new(2.0, 2.0)])
                 .unwrap();
         regression.add_points(&[Point::new(1.0, 1.5)]);
-        assert_eq!(regression.get_points().len(), 3);
-        assert_eq!(*regression.get_points()[1].x(), 1.0);
-        assert_eq!(*regression.get_points()[1].y(), 1.5);
+        assert_eq!(regression.get_points_sorted().len(), 3);
+        assert_eq!(*regression.get_points_sorted()[1].x(), 1.0);
+        assert_eq!(*regression.get_points_sorted()[1].y(), 1.5);
     }
 
     #[test]
@@ -488,9 +514,9 @@ mod tests {
         ])
         .unwrap();
         regression.remove_points(&[Point::new(1.0, 2.0)]);
-        assert_eq!(regression.get_points().len(), 2);
-        assert_eq!(*regression.get_points()[0].x(), 0.0);
-        assert_eq!(*regression.get_points()[1].x(), 2.0);
+        assert_eq!(regression.get_points_sorted().len(), 2);
+        assert_eq!(*regression.get_points_sorted()[0].x(), 0.0);
+        assert_eq!(*regression.get_points_sorted()[1].x(), 2.0);
     }
 
     #[test]
