@@ -94,7 +94,8 @@ impl<T: Coordinate> Point<T> {
         self.weight
     }
 
-    /// Merges this point with another point, updating the coordinates and weight.
+    /// Merges this point with another point, updating only the y-coordinate and weight.
+    /// The x-coordinate is preserved.
     ///
     /// # Examples
     ///
@@ -104,14 +105,13 @@ impl<T: Coordinate> Point<T> {
     /// let mut point1 = Point::new_with_weight(1.0, 2.0, 0.5);
     /// let point2 = Point::new_with_weight(3.0, 4.0, 1.5);
     /// point1.merge_with(&point2);
-    /// assert_eq!(*point1.x(), 2.5);
+    /// assert_eq!(*point1.x(), 1.0); // x unchanged
     /// assert_eq!(*point1.y(), 3.5);
     /// assert_eq!(point1.weight(), 2.0);
     /// ```
     pub fn merge_with(&mut self, other: &Point<T>) {
         let total_weight = self.weight + other.weight;
-        self.x = (self.x * T::from_float(self.weight) + other.x * T::from_float(other.weight))
-            / T::from_float(total_weight);
+        // Only update y-coordinate, preserve x
         self.y = (self.y * T::from_float(self.weight) + other.y * T::from_float(other.weight))
             / T::from_float(total_weight);
         self.weight = total_weight;

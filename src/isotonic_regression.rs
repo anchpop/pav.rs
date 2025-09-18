@@ -81,7 +81,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 3);
+    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
     /// ```
     pub fn new_ascending(
         points: &[Point<T>],
@@ -103,7 +103,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
     ///     Point::new(3.0, 1.0),
     /// ];
     /// let regression = IsotonicRegression::new_descending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 3);
+    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
     /// ```
     pub fn new_descending(
         points: &[Point<T>],
@@ -128,7 +128,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new(&points, Direction::Ascending, false).unwrap();
-    /// assert_eq!(regression.get_points().len(), 3);
+    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
     /// ```
     pub fn new(
         points: &[Point<T>],
@@ -256,7 +256,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 3);
+    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
     /// ```
     pub fn get_points(&self) -> &[Point<T>] {
         &self.points
@@ -414,48 +414,76 @@ impl<T: Coordinate> IsotonicRegression<T> {
 
 #[allow(dead_code)]
 fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Point<T>> {
-    let mut merged_points: Vec<Point<T>> = match direction {
-        Direction::Ascending => points.to_vec(),
-        Direction::Descending => points
-            .iter()
-            .map(|p| Point::new_with_weight(*p.x(), *p.y(), p.weight()))
-            .collect(),
-    };
+    if points.is_empty() {
+        return Vec::new();
+    }
 
-    // Sort the points by x, and if x is equal, sort by y descending to ensure that points with the same x
-    // get merged.
-    merged_points.sort_by(|a, b| {
+    let mut sorted_points: Vec<Point<T>> = points.to_vec();
+    
+    // Sort the points by x
+    sorted_points.sort_by(|a, b| {
         a.x()
             .partial_cmp(b.x())
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                b.y()
-                    .partial_cmp(a.y())
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
     });
 
-    let iso_points =
-        merged_points
-            .into_iter()
-            .fold(Vec::new(), |mut acc: Vec<Point<T>>, mut point| {
-                while let Some(last) = acc.last() {
-                    if (direction == Direction::Ascending && last.y() > point.y())
-                        || (direction == Direction::Descending && last.y() < point.y())
-                    {
-                        point.merge_with(&acc.pop().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                acc.push(point);
-                acc
+    // Apply PAV algorithm - preserve all points, only adjust y-values
+    let mut result = sorted_points.clone();
+    let n = result.len();
+    
+    // Keep track of pools of points that should have the same y-value
+    let mut pools: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
+    
+    loop {
+        let mut merged = false;
+        
+        // Check each adjacent pair of pools
+        for i in 0..pools.len() - 1 {
+            let (start1, end1) = pools[i];
+            let (start2, end2) = pools[i + 1];
+            
+            // Calculate weighted average y for each pool
+            let (sum_y1, sum_weight1) = (start1..end1).fold((T::zero(), 0.0), |(sy, sw), j| {
+                (sy + result[j].y * T::from_float(result[j].weight), sw + result[j].weight)
             });
-
-    match direction {
-        Direction::Ascending => iso_points,
-        Direction::Descending => iso_points,
+            let avg_y1 = sum_y1 / T::from_float(sum_weight1);
+            
+            let (sum_y2, sum_weight2) = (start2..end2).fold((T::zero(), 0.0), |(sy, sw), j| {
+                (sy + result[j].y * T::from_float(result[j].weight), sw + result[j].weight)
+            });
+            let avg_y2 = sum_y2 / T::from_float(sum_weight2);
+            
+            // Check if pools violate monotonicity
+            let should_merge = match direction {
+                Direction::Ascending => avg_y1 > avg_y2,
+                Direction::Descending => avg_y1 < avg_y2,
+            };
+            
+            if should_merge {
+                // Merge the two pools
+                pools[i] = (start1, end2);
+                pools.remove(i + 1);
+                
+                // Calculate new weighted average for merged pool
+                let total_weight = sum_weight1 + sum_weight2;
+                let new_y = (sum_y1 + sum_y2) / T::from_float(total_weight);
+                
+                // Update all points in the merged pool with the new y-value
+                for j in start1..end2 {
+                    result[j].y = new_y;
+                }
+                
+                merged = true;
+                break;
+            }
+        }
+        
+        if !merged {
+            break;
+        }
     }
+    
+    result
 }
 
 #[cfg(test)]
@@ -472,10 +500,16 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(points).unwrap();
-        assert_eq!(regression.get_points_sorted().len(), 3);
-        assert_eq!(*regression.get_points_sorted()[0].y(), 1.0);
-        assert_eq!(*regression.get_points_sorted()[1].y(), 1.75);
-        assert_eq!(*regression.get_points_sorted()[2].y(), 3.0);
+        let sorted_points = regression.get_points_sorted();
+        assert_eq!(sorted_points.len(), 4); // All points preserved
+        assert_eq!(*sorted_points[0].x(), 0.0);
+        assert_eq!(*sorted_points[0].y(), 1.0);
+        assert_eq!(*sorted_points[1].x(), 1.0);
+        assert_eq!(*sorted_points[1].y(), 1.75); // Pooled value
+        assert_eq!(*sorted_points[2].x(), 2.0);
+        assert_eq!(*sorted_points[2].y(), 1.75); // Pooled value
+        assert_eq!(*sorted_points[3].x(), 3.0);
+        assert_eq!(*sorted_points[3].y(), 3.0);
     }
 
     #[test]
@@ -488,10 +522,16 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_descending(points).unwrap();
-        assert_eq!(regression.get_points_sorted().len(), 3);
-        assert_eq!(*regression.get_points_sorted()[0].y(), 3.0);
-        assert_eq!(*regression.get_points_sorted()[1].y(), 2.25);
-        assert_eq!(*regression.get_points_sorted()[2].y(), 1.0);
+        let sorted_points = regression.get_points_sorted();
+        assert_eq!(sorted_points.len(), 4); // All points preserved
+        assert_eq!(*sorted_points[0].x(), 0.0);
+        assert_eq!(*sorted_points[0].y(), 3.0);
+        assert_eq!(*sorted_points[1].x(), 1.0);
+        assert_eq!(*sorted_points[1].y(), 2.25); // Pooled value
+        assert_eq!(*sorted_points[2].x(), 2.0);
+        assert_eq!(*sorted_points[2].y(), 2.25); // Pooled value
+        assert_eq!(*sorted_points[3].x(), 3.0);
+        assert_eq!(*sorted_points[3].y(), 1.0);
     }
 
     #[test]
@@ -513,10 +553,17 @@ mod tests {
             Point::new(2.0, 3.0),
         ])
         .unwrap();
+        
+        // Before removal, all 3 points should be present
+        assert_eq!(regression.get_points_sorted().len(), 3);
+        
         regression.remove_points(&[Point::new(1.0, 2.0)]);
-        assert_eq!(regression.get_points_sorted().len(), 2);
-        assert_eq!(*regression.get_points_sorted()[0].x(), 0.0);
-        assert_eq!(*regression.get_points_sorted()[1].x(), 2.0);
+        
+        // After removal, 2 points should remain
+        let sorted_points = regression.get_points_sorted();
+        assert_eq!(sorted_points.len(), 2);
+        assert_eq!(*sorted_points[0].x(), 0.0);
+        assert_eq!(*sorted_points[1].x(), 2.0);
     }
 
     #[test]
@@ -538,5 +585,70 @@ mod tests {
         assert!(regression.is_empty());
         assert_eq!(regression.len(), 0);
         assert!(regression.interpolate(1.0).is_none());
+    }
+    
+    #[test]
+    fn test_pav_preserves_all_points() {
+        // Test case from the bug description
+        let points = &[
+            Point::new(0.0, 1.0),
+            Point::new(1.0, 10.0),
+            Point::new(2.0, 9.0),
+            Point::new(3.0, 8.0),
+            Point::new(4.0, 20.0),
+        ];
+        
+        let regression = IsotonicRegression::new_ascending(points).unwrap();
+        let sorted_points = regression.get_points_sorted();
+        
+        // All points must be preserved
+        assert_eq!(sorted_points.len(), 5, "All 5 input points should be preserved");
+        
+        // X-coordinates must remain unchanged
+        assert_eq!(*sorted_points[0].x(), 0.0);
+        assert_eq!(*sorted_points[1].x(), 1.0);
+        assert_eq!(*sorted_points[2].x(), 2.0);
+        assert_eq!(*sorted_points[3].x(), 3.0);
+        assert_eq!(*sorted_points[4].x(), 4.0);
+        
+        // Y-coordinates should be pooled for violating points
+        assert_eq!(*sorted_points[0].y(), 1.0); // First point unchanged
+        assert_eq!(*sorted_points[1].y(), 9.0); // Pooled average of 10, 9, 8
+        assert_eq!(*sorted_points[2].y(), 9.0); // Same pooled value
+        assert_eq!(*sorted_points[3].y(), 9.0); // Same pooled value
+        assert_eq!(*sorted_points[4].y(), 20.0); // Last point unchanged
+    }
+    
+    #[test]
+    fn test_weighted_pav_preserves_all_points() {
+        // Test with weighted points
+        let points = &[
+            Point::new_with_weight(0.0, 5.0, 1.0),
+            Point::new_with_weight(1.0, 3.0, 2.0),
+            Point::new_with_weight(2.0, 4.0, 1.0),
+            Point::new_with_weight(3.0, 10.0, 1.0),
+        ];
+        
+        let regression = IsotonicRegression::new_ascending(points).unwrap();
+        let sorted_points = regression.get_points_sorted();
+        
+        // All points must be preserved
+        assert_eq!(sorted_points.len(), 4);
+        
+        // X-coordinates unchanged
+        assert_eq!(*sorted_points[0].x(), 0.0);
+        assert_eq!(*sorted_points[1].x(), 1.0);
+        assert_eq!(*sorted_points[2].x(), 2.0);
+        assert_eq!(*sorted_points[3].x(), 3.0);
+        
+        // Y-values should be pooled where monotonicity is violated
+        // Points 0 (y=5, w=1) and 1 (y=3, w=2) violate ascending order
+        // They get pooled: (5*1 + 3*2)/(1+2) = 11/3 ≈ 3.666...
+        // Point 2 (y=4) doesn't violate monotonicity with pooled value 11/3
+        // Point 3 (y=10) doesn't violate monotonicity
+        assert!((sorted_points[0].y() - 11.0 / 3.0).abs() < 0.0001);
+        assert!((sorted_points[1].y() - 11.0 / 3.0).abs() < 0.0001);
+        assert_eq!(*sorted_points[2].y(), 4.0);
+        assert_eq!(*sorted_points[3].y(), 10.0);
     }
 }
