@@ -35,5 +35,8 @@ fn main() {
     let y = regression.interpolate(original_x).unwrap();
     let recovered_x = regression.invert(y).unwrap();
     println!("  x = {} -> y = {} -> x = {}", original_x, y, recovered_x);
-    println!("  Perfect match: {}", (original_x - recovered_x).abs() < 0.0001);
+    println!(
+        "  Perfect match: {}",
+        (original_x - recovered_x).abs() < 0.0001
+    );
 }

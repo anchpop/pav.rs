@@ -151,7 +151,10 @@ impl<T: Coordinate> SmoothRegression<T> {
 
         // Binary search to find segment
         // Find the last boundary <= x
-        let i = match self.boundaries.binary_search_by(|&b| b.partial_cmp(&x_clamped).unwrap()) {
+        let i = match self
+            .boundaries
+            .binary_search_by(|&b| b.partial_cmp(&x_clamped).unwrap())
+        {
             Ok(idx) => idx.min(self.coeffs.len() - 1),
             Err(idx) => {
                 if idx == 0 {
@@ -318,32 +321,45 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         }
     }
 
-    /// Compute the integral from x_start to x_end, clamped to [x_min, x_max]
-    fn integrate(&self, x_start: T, x_end: T, x_min: T, x_max: T) -> T {
-        let x_start_clamped = x_start.max(x_min).min(x_max);
-        let x_end_clamped = x_end.max(x_min).min(x_max);
-
-        self.eval_cumulative(x_end_clamped) - self.eval_cumulative(x_start_clamped)
+    /// Compute the integral from x_start to x_end
+    /// The function is extended as constant beyond its domain to preserve monotonicity
+    fn integrate(&self, x_start: T, x_end: T, _x_min: T, _x_max: T) -> T {
+        // No clamping - the cumulative function handles extension
+        self.eval_cumulative(x_end) - self.eval_cumulative(x_start)
     }
 
     /// Evaluate the cumulative integral F(x) = ∫[-∞, x] f(t) dt
+    /// The function is extended as constant beyond its domain:
+    /// - For t < x_min: f(t) = y_min
+    /// - For t > x_max: f(t) = y_max
     fn eval_cumulative(&self, x: T) -> T {
         if self.xs.is_empty() {
             return T::zero();
         }
 
-        // Binary search to find segment
+        let x_min = self.xs[0];
+        let x_max = *self.xs.last().unwrap();
+        let y_min = self.ys[0];
+        let y_max = *self.ys.last().unwrap();
+
+        // Extend as constant to the left
+        if x <= x_min {
+            // F(x) = y_min * (x - x_min)
+            // This gives F(x_min) = 0
+            return y_min * (x - x_min);
+        }
+
+        // Extend as constant to the right
+        if x >= x_max {
+            // F(x) = F(x_max) + y_max * (x - x_max)
+            let f_at_max = *self.cumulative_areas.last().unwrap();
+            return f_at_max + y_max * (x - x_max);
+        }
+
+        // Binary search to find segment for interior points
         let i = match self.xs.binary_search_by(|&xi| xi.partial_cmp(&x).unwrap()) {
             Ok(idx) => return self.cumulative_areas[idx],
-            Err(idx) => {
-                if idx == 0 {
-                    return T::zero();
-                }
-                if idx >= self.xs.len() {
-                    return *self.cumulative_areas.last().unwrap();
-                }
-                idx - 1
-            }
+            Err(idx) => idx - 1,
         };
 
         // Interpolate within segment i
@@ -391,7 +407,10 @@ fn fit_quadratic<T: Coordinate>(x0: T, y0: T, x1: T, y1: T, x2: T, y2: T) -> (T,
 
     let a = (y0 * (x1 - x2) + y1 * (x2 - x0) + y2 * (x0 - x1)) / denom;
     let b = (y0 * (x1_sq - x2_sq) + y1 * (x2_sq - x0_sq) + y2 * (x0_sq - x1_sq)) / (-denom);
-    let c = (y0 * (x1_sq * x2 - x2_sq * x1) + y1 * (x2_sq * x0 - x0_sq * x2) + y2 * (x0_sq * x1 - x1_sq * x0)) / denom;
+    let c = (y0 * (x1_sq * x2 - x2_sq * x1)
+        + y1 * (x2_sq * x0 - x0_sq * x2)
+        + y2 * (x0_sq * x1 - x1_sq * x0))
+        / denom;
 
     (a, b, c)
 }
@@ -429,10 +448,17 @@ mod tests {
 
         // Check monotonicity in the interior (away from boundaries)
         let mut prev_y = 0.0f64;
-        for i in 1..29 {  // Skip near boundaries
+        for i in 1..29 {
+            // Skip near boundaries
             let x = i as f64 * 0.1;
             if let Some(y) = smooth.interpolate(x) {
-                assert!(y >= prev_y - 0.01, "Not monotonic at x={:?}: y={}, prev_y={}", x, y, prev_y);
+                assert!(
+                    y >= prev_y - 0.01,
+                    "Not monotonic at x={:?}: y={}, prev_y={}",
+                    x,
+                    y,
+                    prev_y
+                );
                 prev_y = y;
             }
         }
@@ -492,5 +518,50 @@ mod tests {
             x_mid,
             verify_y
         );
+    }
+
+    #[test]
+    fn test_monotonicity_near_boundaries() {
+        // Boss Claude's counterexample: f(x) = 10x - 5 on [0, 1]
+        // This goes from -5 to +5, testing monotonicity with negative values
+        let points = vec![
+            Point::new(0.0, -5.0),
+            Point::new(0.5, 0.0),
+            Point::new(1.0, 5.0),
+        ];
+        let regression = IsotonicRegression::new_ascending(&points).unwrap();
+        let smooth = SmoothRegression::from_regression(&regression, 0.3);
+
+        // Check monotonicity near left boundary
+        let mut prev_y = smooth.interpolate(0.0).unwrap();
+        for i in 1..=10 {
+            let x = i as f64 * 0.1;
+            let y = smooth.interpolate(x).unwrap();
+            assert!(
+                y >= prev_y - 1e-10,
+                "Not monotonic at x={}: y={} < prev_y={}",
+                x,
+                y,
+                prev_y
+            );
+            prev_y = y;
+        }
+
+        // Check monotonicity across entire domain
+        prev_y = smooth.interpolate(0.0).unwrap();
+        for i in 1..=100 {
+            let x = i as f64 * 0.01;
+            if x <= 1.0 {
+                let y = smooth.interpolate(x).unwrap();
+                assert!(
+                    y >= prev_y - 1e-10,
+                    "Not monotonic at x={}: y={} < prev_y={}",
+                    x,
+                    y,
+                    prev_y
+                );
+                prev_y = y;
+            }
+        }
     }
 }

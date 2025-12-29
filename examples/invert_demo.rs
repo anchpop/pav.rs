@@ -19,7 +19,10 @@ fn main() {
     // Use interpolate to predict sales at different prices
     for price in [12.0, 17.5, 22.5, 27.5] {
         let predicted_sales = regression.interpolate(price).unwrap();
-        println!("  At price ${:.2}, we predict {:.1} sales", price, predicted_sales);
+        println!(
+            "  At price ${:.2}, we predict {:.1} sales",
+            price, predicted_sales
+        );
     }
 
     println!("\nSales-to-Price Prediction (invert):");
@@ -41,6 +44,9 @@ fn main() {
     let test_price = 18.0;
     let sales = regression.interpolate(test_price).unwrap();
     let price_back = regression.invert(sales).unwrap();
-    println!("  Price ${:.2} -> {:.1} sales -> ${:.2} price", test_price, sales, price_back);
+    println!(
+        "  Price ${:.2} -> {:.1} sales -> ${:.2} price",
+        test_price, sales, price_back
+    );
     println!("  Difference: ${:.4}", (test_price - price_back).abs());
 }

@@ -204,8 +204,8 @@ impl<T: Coordinate> IsotonicRegression<T> {
                 }
                 // Requested point meets or exceeds the upper bound
                 (Some(upper), None) => {
-                     // at_x is beyond the last point - interpolate with centroid
-                     interpolate_two_points(
+                    // at_x is beyond the last point - interpolate with centroid
+                    interpolate_two_points(
                         &self.get_centroid_point().unwrap(),
                         &self.points[upper],
                         at_x,
@@ -320,11 +320,9 @@ impl<T: Coordinate> IsotonicRegression<T> {
                     || (!point.x().is_sign_negative() && !point.y().is_sign_negative()),
                 "With intersect_origin = true, all points must be >= 0 on both x and y axes"
             );
-            self.centroid_point.sum_x =
-                self.centroid_point.sum_x + *point.x() * T::from_float(point.weight());
-            self.centroid_point.sum_y =
-                self.centroid_point.sum_y + *point.y() * T::from_float(point.weight());
-            self.centroid_point.sum_weight = self.centroid_point.sum_weight + point.weight();
+            self.centroid_point.sum_x += *point.x() * T::from_float(point.weight());
+            self.centroid_point.sum_y += *point.y() * T::from_float(point.weight());
+            self.centroid_point.sum_weight += point.weight();
         }
 
         let mut new_points = self.points.clone();
@@ -360,7 +358,7 @@ impl<T: Coordinate> IsotonicRegression<T> {
                 self.centroid_point.sum_x - *point.x() * T::from_float(point.weight());
             self.centroid_point.sum_y =
                 self.centroid_point.sum_y - *point.y() * T::from_float(point.weight());
-            self.centroid_point.sum_weight = self.centroid_point.sum_weight - point.weight();
+            self.centroid_point.sum_weight -= point.weight();
         }
 
         let mut new_points = self.points.clone();
@@ -447,15 +445,11 @@ impl<T: Coordinate> IsotonicRegression<T> {
         let pos = match self.direction {
             Direction::Ascending => {
                 // For ascending, y values are non-decreasing
-                sorted_points.binary_search_by(|p| {
-                    p.y().partial_cmp(&at_y).unwrap()
-                })
+                sorted_points.binary_search_by(|p| p.y().partial_cmp(&at_y).unwrap())
             }
             Direction::Descending => {
                 // For descending, y values are non-increasing, so reverse the comparison
-                sorted_points.binary_search_by(|p| {
-                    at_y.partial_cmp(p.y()).unwrap()
-                })
+                sorted_points.binary_search_by(|p| at_y.partial_cmp(p.y()).unwrap())
             }
         };
 
@@ -473,7 +467,8 @@ impl<T: Coordinate> IsotonicRegression<T> {
 
                 // Find the last point with this y value
                 let mut end_idx = exact_idx;
-                while end_idx < sorted_points.len() - 1 && sorted_points[end_idx + 1].y() == y_value {
+                while end_idx < sorted_points.len() - 1 && sorted_points[end_idx + 1].y() == y_value
+                {
                     end_idx += 1;
                 }
 
@@ -524,7 +519,7 @@ fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Poi
     }
 
     let mut sorted_points: Vec<Point<T>> = points.to_vec();
-    
+
     // Sort the points by x
     sorted_points.sort_by(|a, b| {
         a.x()
@@ -535,59 +530,65 @@ fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Poi
     // Apply PAV algorithm - preserve all points, only adjust y-values
     let mut result = sorted_points.clone();
     let n = result.len();
-    
+
     // Keep track of pools of points that should have the same y-value
     let mut pools: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
-    
+
     loop {
         let mut merged = false;
-        
+
         // Check each adjacent pair of pools
         for i in 0..pools.len() - 1 {
             let (start1, end1) = pools[i];
             let (start2, end2) = pools[i + 1];
-            
+
             // Calculate weighted average y for each pool
             let (sum_y1, sum_weight1) = (start1..end1).fold((T::zero(), 0.0), |(sy, sw), j| {
-                (sy + result[j].y * T::from_float(result[j].weight), sw + result[j].weight)
+                (
+                    sy + result[j].y * T::from_float(result[j].weight),
+                    sw + result[j].weight,
+                )
             });
             let avg_y1 = sum_y1 / T::from_float(sum_weight1);
-            
+
             let (sum_y2, sum_weight2) = (start2..end2).fold((T::zero(), 0.0), |(sy, sw), j| {
-                (sy + result[j].y * T::from_float(result[j].weight), sw + result[j].weight)
+                (
+                    sy + result[j].y * T::from_float(result[j].weight),
+                    sw + result[j].weight,
+                )
             });
             let avg_y2 = sum_y2 / T::from_float(sum_weight2);
-            
+
             // Check if pools violate monotonicity
             let should_merge = match direction {
                 Direction::Ascending => avg_y1 > avg_y2,
                 Direction::Descending => avg_y1 < avg_y2,
             };
-            
+
             if should_merge {
                 // Merge the two pools
                 pools[i] = (start1, end2);
                 pools.remove(i + 1);
-                
+
                 // Calculate new weighted average for merged pool
                 let total_weight = sum_weight1 + sum_weight2;
                 let new_y = (sum_y1 + sum_y2) / T::from_float(total_weight);
-                
+
                 // Update all points in the merged pool with the new y-value
                 for j in start1..end2 {
                     result[j].y = new_y;
                 }
-                
+
                 merged = true;
                 break;
             }
         }
-        
+
         if !merged {
             break;
         }
     }
-    
+
     result
 }
 
@@ -658,12 +659,12 @@ mod tests {
             Point::new(2.0, 3.0),
         ])
         .unwrap();
-        
+
         // Before removal, all 3 points should be present
         assert_eq!(regression.get_points_sorted().len(), 3);
-        
+
         regression.remove_points(&[Point::new(1.0, 2.0)]);
-        
+
         // After removal, 2 points should remain
         let sorted_points = regression.get_points_sorted();
         assert_eq!(sorted_points.len(), 2);
@@ -691,7 +692,7 @@ mod tests {
         assert_eq!(regression.len(), 0);
         assert!(regression.interpolate(1.0).is_none());
     }
-    
+
     #[test]
     fn test_pav_preserves_all_points() {
         // Test case from the bug description
@@ -702,20 +703,24 @@ mod tests {
             Point::new(3.0, 8.0),
             Point::new(4.0, 20.0),
         ];
-        
+
         let regression = IsotonicRegression::new_ascending(points).unwrap();
         let sorted_points = regression.get_points_sorted();
-        
+
         // All points must be preserved
-        assert_eq!(sorted_points.len(), 5, "All 5 input points should be preserved");
-        
+        assert_eq!(
+            sorted_points.len(),
+            5,
+            "All 5 input points should be preserved"
+        );
+
         // X-coordinates must remain unchanged
         assert_eq!(*sorted_points[0].x(), 0.0);
         assert_eq!(*sorted_points[1].x(), 1.0);
         assert_eq!(*sorted_points[2].x(), 2.0);
         assert_eq!(*sorted_points[3].x(), 3.0);
         assert_eq!(*sorted_points[4].x(), 4.0);
-        
+
         // Y-coordinates should be pooled for violating points
         assert_eq!(*sorted_points[0].y(), 1.0); // First point unchanged
         assert_eq!(*sorted_points[1].y(), 9.0); // Pooled average of 10, 9, 8
@@ -723,7 +728,7 @@ mod tests {
         assert_eq!(*sorted_points[3].y(), 9.0); // Same pooled value
         assert_eq!(*sorted_points[4].y(), 20.0); // Last point unchanged
     }
-    
+
     #[test]
     fn test_weighted_pav_preserves_all_points() {
         // Test with weighted points
