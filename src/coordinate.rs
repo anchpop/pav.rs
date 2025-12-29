@@ -44,8 +44,8 @@ pub trait Coordinate:
     /// ```
     /// use pav_regression::Coordinate;
     ///
-    /// let value: f64 = 3.14;
-    /// assert_eq!(value.to_float(), 3.14);
+    /// let value: f64 = 3.7;
+    /// assert_eq!(value.to_float(), 3.7);
     /// ```
     fn to_float(&self) -> f64;
 
@@ -56,8 +56,8 @@ pub trait Coordinate:
     /// ```
     /// use pav_regression::Coordinate;
     ///
-    /// let value = f64::from_float(3.14);
-    /// assert_eq!(value, 3.14);
+    /// let value = f64::from_float(3.7);
+    /// assert_eq!(value, 3.7);
     /// ```
     fn from_float(value: f64) -> Self;
 
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(f64::zero(), 0.0);
         assert_eq!(f64::one(), 1.0);
         assert_eq!(a.to_float(), 2.5);
-        assert_eq!(f64::from_float(3.14), 3.14);
+        assert_eq!(f64::from_float(3.7), 3.7);
         assert_eq!(a.abs_diff(&b), 4.0);
         assert!(!a.is_sign_negative());
         assert!(b.is_sign_negative());

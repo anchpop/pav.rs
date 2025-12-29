@@ -575,8 +575,8 @@ fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Poi
                 let new_y = (sum_y1 + sum_y2) / T::from_float(total_weight);
 
                 // Update all points in the merged pool with the new y-value
-                for j in start1..end2 {
-                    result[j].y = new_y;
+                for point in result.iter_mut().take(end2).skip(start1) {
+                    point.y = new_y;
                 }
 
                 merged = true;
