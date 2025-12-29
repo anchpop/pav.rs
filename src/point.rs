@@ -142,3 +142,23 @@ pub fn interpolate_two_points<T: Coordinate>(a: &Point<T>, b: &Point<T>, at_x: T
     let prop = (at_x - a.x) / (b.x - a.x);
     a.y + (b.y - a.y) * prop
 }
+
+#[allow(dead_code)]
+/// Interpolates the x value at a given y position between two points.
+/// This is the inverse operation of `interpolate_two_points`.
+///
+/// # Examples
+///
+/// ```
+/// use pav_regression::Point;
+/// use pav_regression::point::interpolate_x_from_y;
+///
+/// let point1 = Point::new(0.0, 0.0);
+/// let point2 = Point::new(2.0, 2.0);
+/// let interpolated_x = interpolate_x_from_y(&point1, &point2, 1.0);
+/// assert_eq!(interpolated_x, 1.0);
+/// ```
+pub fn interpolate_x_from_y<T: Coordinate>(a: &Point<T>, b: &Point<T>, at_y: T) -> T {
+    let prop = (at_y - a.y) / (b.y - a.y);
+    a.x + (b.x - a.x) * prop
+}

@@ -1,5 +1,5 @@
 use crate::coordinate::Coordinate;
-use crate::point::{interpolate_two_points, Point};
+use crate::point::{interpolate_two_points, interpolate_x_from_y, Point};
 use eytzinger::SliceExt;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
@@ -410,6 +410,111 @@ impl<T: Coordinate> IsotonicRegression<T> {
     pub fn is_empty(&self) -> bool {
         self.centroid_point.sum_weight == 0.0
     }
+
+    /// Find the _x_ value that would produce the given `at_y` value, or None if the regression is empty.
+    /// This is the inverse operation of `interpolate`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::{Point, IsotonicRegression};
+    ///
+    /// let points = vec![
+    ///     Point::new(0.0, 1.0),
+    ///     Point::new(1.0, 2.0),
+    ///     Point::new(2.0, 1.5),
+    ///     Point::new(3.0, 3.0),
+    /// ];
+    /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
+    /// let inverted_x = regression.invert(1.75).unwrap();
+    /// // 1.75 is the y-value at x=1.5, so we should get back approximately 1.5
+    /// assert!((inverted_x - 1.5).abs() < 0.01);
+    /// ```
+    #[must_use]
+    pub fn invert(&self, at_y: T) -> Option<T> {
+        if self.points.is_empty() {
+            return None;
+        }
+
+        if self.points.len() == 1 {
+            return Some(*self.points[0].x());
+        }
+
+        // We need to work with sorted points for binary search on y values
+        let sorted_points = self.get_points_sorted();
+
+        // Binary search to find the position where at_y would fit
+        let pos = match self.direction {
+            Direction::Ascending => {
+                // For ascending, y values are non-decreasing
+                sorted_points.binary_search_by(|p| {
+                    p.y().partial_cmp(&at_y).unwrap()
+                })
+            }
+            Direction::Descending => {
+                // For descending, y values are non-increasing, so reverse the comparison
+                sorted_points.binary_search_by(|p| {
+                    at_y.partial_cmp(p.y()).unwrap()
+                })
+            }
+        };
+
+        match pos {
+            Ok(exact_idx) => {
+                // Found exact match - but we need to handle horizontal segments (pooled points)
+                // Find the range of points with the same y value
+                let y_value = sorted_points[exact_idx].y();
+
+                // Find the first point with this y value
+                let mut start_idx = exact_idx;
+                while start_idx > 0 && sorted_points[start_idx - 1].y() == y_value {
+                    start_idx -= 1;
+                }
+
+                // Find the last point with this y value
+                let mut end_idx = exact_idx;
+                while end_idx < sorted_points.len() - 1 && sorted_points[end_idx + 1].y() == y_value {
+                    end_idx += 1;
+                }
+
+                // If there's a range of points with the same y, return the midpoint
+                if start_idx < end_idx {
+                    let start_x = *sorted_points[start_idx].x();
+                    let end_x = *sorted_points[end_idx].x();
+                    Some((start_x + end_x) / T::from_float(2.0))
+                } else {
+                    Some(*sorted_points[exact_idx].x())
+                }
+            }
+            Err(insert_idx) => {
+                // at_y falls between two points or outside the range
+                if insert_idx == 0 {
+                    // at_y is before the first point
+                    if self.intersect_origin {
+                        // Interpolate between origin and first point
+                        let p1 = Point::new(T::zero(), T::zero());
+                        let p2 = &sorted_points[0];
+                        Some(interpolate_x_from_y(&p1, p2, at_y))
+                    } else {
+                        // Interpolate between centroid and first point
+                        let centroid = self.get_centroid_point()?;
+                        let p2 = &sorted_points[0];
+                        Some(interpolate_x_from_y(&centroid, p2, at_y))
+                    }
+                } else if insert_idx >= sorted_points.len() {
+                    // at_y is after the last point
+                    let p1 = &sorted_points[sorted_points.len() - 1];
+                    let centroid = self.get_centroid_point()?;
+                    Some(interpolate_x_from_y(p1, &centroid, at_y))
+                } else {
+                    // at_y is between two points
+                    let p1 = &sorted_points[insert_idx - 1];
+                    let p2 = &sorted_points[insert_idx];
+                    Some(interpolate_x_from_y(p1, p2, at_y))
+                }
+            }
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -628,19 +733,19 @@ mod tests {
             Point::new_with_weight(2.0, 4.0, 1.0),
             Point::new_with_weight(3.0, 10.0, 1.0),
         ];
-        
+
         let regression = IsotonicRegression::new_ascending(points).unwrap();
         let sorted_points = regression.get_points_sorted();
-        
+
         // All points must be preserved
         assert_eq!(sorted_points.len(), 4);
-        
+
         // X-coordinates unchanged
         assert_eq!(*sorted_points[0].x(), 0.0);
         assert_eq!(*sorted_points[1].x(), 1.0);
         assert_eq!(*sorted_points[2].x(), 2.0);
         assert_eq!(*sorted_points[3].x(), 3.0);
-        
+
         // Y-values should be pooled where monotonicity is violated
         // Points 0 (y=5, w=1) and 1 (y=3, w=2) violate ascending order
         // They get pooled: (5*1 + 3*2)/(1+2) = 11/3 ≈ 3.666...
@@ -650,5 +755,69 @@ mod tests {
         assert!((sorted_points[1].y() - 11.0 / 3.0).abs() < 0.0001);
         assert_eq!(*sorted_points[2].y(), 4.0);
         assert_eq!(*sorted_points[3].y(), 10.0);
+    }
+
+    #[test]
+    fn test_invert_ascending() {
+        let points = vec![
+            Point::new(0.0, 1.0),
+            Point::new(1.0, 2.0),
+            Point::new(2.0, 1.5),
+            Point::new(3.0, 3.0),
+        ];
+        let regression = IsotonicRegression::new_ascending(&points).unwrap();
+
+        // Test exact point matches
+        let x_at_1 = regression.invert(1.0).unwrap();
+        assert!((x_at_1 - 0.0).abs() < 0.01);
+
+        // Test interpolated values
+        // At x=1.5, y=1.75 (from the example in the docstring)
+        let x_at_1_75 = regression.invert(1.75).unwrap();
+        assert!((x_at_1_75 - 1.5).abs() < 0.01);
+
+        // Test that interpolate and invert are inverses
+        let test_x = 1.5;
+        let y = regression.interpolate(test_x).unwrap();
+        let inverted_x = regression.invert(y).unwrap();
+        assert!((inverted_x - test_x).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_invert_descending() {
+        let points = vec![
+            Point::new(0.0, 3.0),
+            Point::new(1.0, 2.0),
+            Point::new(2.0, 2.5),
+            Point::new(3.0, 1.0),
+        ];
+        let regression = IsotonicRegression::new_descending(&points).unwrap();
+
+        // Test exact point matches
+        let x_at_3 = regression.invert(3.0).unwrap();
+        assert!((x_at_3 - 0.0).abs() < 0.01);
+
+        let x_at_1 = regression.invert(1.0).unwrap();
+        assert!((x_at_1 - 3.0).abs() < 0.01);
+
+        // Test that interpolate and invert are inverses
+        let test_x = 1.5;
+        let y = regression.interpolate(test_x).unwrap();
+        let inverted_x = regression.invert(y).unwrap();
+        assert!((inverted_x - test_x).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_invert_empty() {
+        let regression: IsotonicRegression<f64> = IsotonicRegression::new_ascending(&[]).unwrap();
+        assert!(regression.invert(1.0).is_none());
+    }
+
+    #[test]
+    fn test_invert_single_point() {
+        let points = vec![Point::new(1.0, 2.0)];
+        let regression = IsotonicRegression::new_ascending(&points).unwrap();
+        let x = regression.invert(2.0).unwrap();
+        assert_eq!(x, 1.0);
     }
 }

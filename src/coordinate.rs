@@ -101,6 +101,56 @@ pub trait Coordinate:
     /// assert_eq!(a.average(&b), 3.0);
     /// ```
     fn average(&self, other: &Self) -> Self;
+
+    /// Computes the absolute value of the coordinate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::Coordinate;
+    ///
+    /// let a: f64 = -2.5;
+    /// assert_eq!(a.abs(), 2.5);
+    /// ```
+    fn abs(&self) -> Self;
+
+    /// Computes the square root of the coordinate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::Coordinate;
+    ///
+    /// let a: f64 = 4.0;
+    /// assert_eq!(a.sqrt(), 2.0);
+    /// ```
+    fn sqrt(&self) -> Self;
+
+    /// Returns the maximum of two coordinates.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::Coordinate;
+    ///
+    /// let a: f64 = 2.0;
+    /// let b: f64 = 4.0;
+    /// assert_eq!(a.max(b), 4.0);
+    /// ```
+    fn max(&self, other: Self) -> Self;
+
+    /// Returns the minimum of two coordinates.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::Coordinate;
+    ///
+    /// let a: f64 = 2.0;
+    /// let b: f64 = 4.0;
+    /// assert_eq!(a.min(b), 2.0);
+    /// ```
+    fn min(&self, other: Self) -> Self;
 }
 
 impl Coordinate for f64 {
@@ -130,6 +180,22 @@ impl Coordinate for f64 {
 
     fn average(&self, other: &Self) -> Self {
         (self + other) / 2.0
+    }
+
+    fn abs(&self) -> Self {
+        f64::abs(*self)
+    }
+
+    fn sqrt(&self) -> Self {
+        f64::sqrt(*self)
+    }
+
+    fn max(&self, other: Self) -> Self {
+        f64::max(*self, other)
+    }
+
+    fn min(&self, other: Self) -> Self {
+        f64::min(*self, other)
     }
 }
 
