@@ -518,74 +518,57 @@ fn isotonic<T: Coordinate>(points: &[Point<T>], direction: Direction) -> Vec<Poi
         return Vec::new();
     }
 
-    let mut sorted_points: Vec<Point<T>> = points.to_vec();
+    let mut result: Vec<Point<T>> = points.to_vec();
 
     // Sort the points by x
-    sorted_points.sort_by(|a, b| {
+    result.sort_unstable_by(|a, b| {
         a.x()
             .partial_cmp(b.x())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Apply PAV algorithm - preserve all points, only adjust y-values
-    let mut result = sorted_points.clone();
     let n = result.len();
 
-    // Keep track of pools of points that should have the same y-value
-    let mut pools: Vec<(usize, usize)> = (0..n).map(|i| (i, i + 1)).collect();
+    // Single-pass stack-based PAV algorithm.
+    // Each pool is (start_index, end_index, sum_y_weighted, sum_weight).
+    // We process points left-to-right, merging adjacent pools that violate monotonicity.
+    let mut pools: Vec<(usize, usize, T, f64)> = Vec::with_capacity(n);
 
-    loop {
-        let mut merged = false;
+    for i in 0..n {
+        let wy = *result[i].y() * T::from_float(result[i].weight());
+        let w = result[i].weight();
+        pools.push((i, i + 1, wy, w));
 
-        // Check each adjacent pair of pools
-        for i in 0..pools.len() - 1 {
-            let (start1, end1) = pools[i];
-            let (start2, end2) = pools[i + 1];
+        // Merge backwards while monotonicity is violated
+        while pools.len() >= 2 {
+            let len = pools.len();
+            let (_, _, sum_y1, w1) = pools[len - 2];
+            let (_, _, sum_y2, w2) = pools[len - 1];
+            let avg1 = sum_y1 / T::from_float(w1);
+            let avg2 = sum_y2 / T::from_float(w2);
 
-            // Calculate weighted average y for each pool
-            let (sum_y1, sum_weight1) = (start1..end1).fold((T::zero(), 0.0), |(sy, sw), j| {
-                (
-                    sy + result[j].y * T::from_float(result[j].weight),
-                    sw + result[j].weight,
-                )
-            });
-            let avg_y1 = sum_y1 / T::from_float(sum_weight1);
-
-            let (sum_y2, sum_weight2) = (start2..end2).fold((T::zero(), 0.0), |(sy, sw), j| {
-                (
-                    sy + result[j].y * T::from_float(result[j].weight),
-                    sw + result[j].weight,
-                )
-            });
-            let avg_y2 = sum_y2 / T::from_float(sum_weight2);
-
-            // Check if pools violate monotonicity
-            let should_merge = match direction {
-                Direction::Ascending => avg_y1 > avg_y2,
-                Direction::Descending => avg_y1 < avg_y2,
+            let violates = match direction {
+                Direction::Ascending => avg1 > avg2,
+                Direction::Descending => avg1 < avg2,
             };
 
-            if should_merge {
-                // Merge the two pools
-                pools[i] = (start1, end2);
-                pools.remove(i + 1);
-
-                // Calculate new weighted average for merged pool
-                let total_weight = sum_weight1 + sum_weight2;
-                let new_y = (sum_y1 + sum_y2) / T::from_float(total_weight);
-
-                // Update all points in the merged pool with the new y-value
-                for point in result.iter_mut().take(end2).skip(start1) {
-                    point.y = new_y;
-                }
-
-                merged = true;
+            if violates {
+                let (start, _, _, _) = pools[len - 2];
+                let (_, end, _, _) = pools[len - 1];
+                let merged = (start, end, sum_y1 + sum_y2, w1 + w2);
+                pools[len - 2] = merged;
+                pools.pop();
+            } else {
                 break;
             }
         }
+    }
 
-        if !merged {
-            break;
+    // Apply pooled y-values back to all points
+    for &(start, end, sum_y, sum_w) in &pools {
+        let new_y = sum_y / T::from_float(sum_w);
+        for point in result[start..end].iter_mut() {
+            point.y = new_y;
         }
     }
 
