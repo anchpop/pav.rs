@@ -135,53 +135,71 @@ impl<T: Coordinate> SmoothRegression<T> {
         // Get domain bounds
         let x_min = *points.first().unwrap().x();
         let x_max = *points.last().unwrap().x();
-
-        // Step 1: Build cumulative integral function
-        let cumulative = CumulativeIntegral::new(&points);
-
-        // Step 2: Generate segment boundaries (fused into one loop)
-        let mut boundaries = Vec::with_capacity(points.len() * 3);
-        for point in &points {
-            let x = *point.x();
-            boundaries.push(x - window_half_width);
-            boundaries.push(x);
-            boundaries.push(x + window_half_width);
-        }
-
-        boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        boundaries.dedup();
-
-        // Clamp to original domain
-        boundaries.retain(|&x| x >= x_min && x <= x_max);
-
-        // Step 3: Compute quadratic coefficients for each segment,
-        // caching boundary y-values to avoid recomputing shared endpoints
         let w = window_half_width;
         let two_w = T::from_float(2.0) * w;
+
+        // Step 1: Build cumulative integral function (O(n))
+        let cumulative = CumulativeIntegral::new(&points);
+
+        // Step 2: Generate sorted boundaries via 3-way merge (O(n) vs O(n log n) sort)
+        // The three sequences (x-w, x, x+w) are each already sorted.
+        let boundaries = {
+            let seq_minus: Vec<T> = points.iter().map(|p| *p.x() - w).collect();
+            let seq_zero: Vec<T> = points.iter().map(|p| *p.x()).collect();
+            let seq_plus: Vec<T> = points.iter().map(|p| *p.x() + w).collect();
+            let ab = sorted_merge(&seq_minus, &seq_zero);
+            let mut merged = sorted_merge(&ab, &seq_plus);
+            merged.dedup();
+            merged.retain(|&x| x >= x_min && x <= x_max);
+            merged
+        };
+
         let num_segments = boundaries.len().saturating_sub(1);
-        let mut coeffs = Vec::with_capacity(num_segments);
-        let mut boundary_ys = Vec::with_capacity(boundaries.len());
 
-        // Compute first boundary y
-        if !boundaries.is_empty() {
-            let y0 = cumulative.integrate(boundaries[0] - w, boundaries[0] + w, x_min, x_max) / two_w;
-            boundary_ys.push(y0);
-        }
+        // Step 3: Precompute smoothed y at all boundaries via batch linear scan (O(n))
+        // Since boundaries are sorted, (b-w) and (b+w) are also sorted sequences,
+        // so we replace O(log n) binary searches with O(1) amortized linear scans.
+        let boundary_ys = {
+            let bw_minus: Vec<T> = boundaries.iter().map(|&b| b - w).collect();
+            let bw_plus: Vec<T> = boundaries.iter().map(|&b| b + w).collect();
+            let eval_minus = cumulative.batch_eval_sorted(&bw_minus);
+            let eval_plus = cumulative.batch_eval_sorted(&bw_plus);
+            eval_plus
+                .iter()
+                .zip(eval_minus.iter())
+                .map(|(&ep, &em)| (ep - em) / two_w)
+                .collect::<Vec<T>>()
+        };
 
-        for i in 0..num_segments {
-            let x0 = boundaries[i];
-            let x1 = boundaries[i + 1];
-            let xm = (x0 + x1) / T::from_float(2.0);
+        // Step 4: Compute midpoints and their smoothed y-values (O(n))
+        let midpoints: Vec<T> = (0..num_segments)
+            .map(|i| (boundaries[i] + boundaries[i + 1]) / T::from_float(2.0))
+            .collect();
+        let midpoint_ys = {
+            let mw_minus: Vec<T> = midpoints.iter().map(|&m| m - w).collect();
+            let mw_plus: Vec<T> = midpoints.iter().map(|&m| m + w).collect();
+            let eval_minus = cumulative.batch_eval_sorted(&mw_minus);
+            let eval_plus = cumulative.batch_eval_sorted(&mw_plus);
+            eval_plus
+                .iter()
+                .zip(eval_minus.iter())
+                .map(|(&ep, &em)| (ep - em) / two_w)
+                .collect::<Vec<T>>()
+        };
 
-            let y0 = boundary_ys[i]; // Already computed
-            let y1 = cumulative.integrate(x1 - w, x1 + w, x_min, x_max) / two_w;
-            let ym = cumulative.integrate(xm - w, xm + w, x_min, x_max) / two_w;
-
-            boundary_ys.push(y1);
-
-            let (a, b, c) = fit_quadratic(x0, y0, xm, ym, x1, y1);
-            coeffs.push((a, b, c));
-        }
+        // Step 5: Fit quadratics using precomputed values (O(n))
+        let coeffs: Vec<(T, T, T)> = (0..num_segments)
+            .map(|i| {
+                fit_quadratic(
+                    boundaries[i],
+                    boundary_ys[i],
+                    midpoints[i],
+                    midpoint_ys[i],
+                    boundaries[i + 1],
+                    boundary_ys[i + 1],
+                )
+            })
+            .collect();
 
         SmoothRegression {
             boundaries,
@@ -385,61 +403,85 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         }
     }
 
-    /// Compute the integral from x_start to x_end
-    /// The function is extended as constant beyond its domain to preserve monotonicity
-    fn integrate(&self, x_start: T, x_end: T, _x_min: T, _x_max: T) -> T {
-        // No clamping - the cumulative function handles extension
-        self.eval_cumulative(x_end) - self.eval_cumulative(x_start)
-    }
-
-    /// Evaluate the cumulative integral F(x) = integral[-inf, x] f(t) dt
+    /// Evaluate the cumulative integral F(x) at multiple sorted x-values in O(n) time.
+    ///
+    /// Uses a linear scan instead of binary search — since query_xs is sorted,
+    /// we advance a cursor through self.xs, giving O(1) amortized cost per query
+    /// instead of O(log n).
+    ///
     /// The function is extended as constant beyond its domain:
     /// - For t < x_min: f(t) = y_min
     /// - For t > x_max: f(t) = y_max
-    fn eval_cumulative(&self, x: T) -> T {
+    fn batch_eval_sorted(&self, query_xs: &[T]) -> Vec<T> {
+        let mut results = Vec::with_capacity(query_xs.len());
+
         if self.xs.is_empty() {
-            return T::zero();
+            results.resize(query_xs.len(), T::zero());
+            return results;
         }
 
+        let n = self.xs.len();
         let x_min = self.xs[0];
         let x_max = *self.xs.last().unwrap();
         let y_min = self.ys[0];
         let y_max = *self.ys.last().unwrap();
+        let f_at_max = *self.cumulative_areas.last().unwrap();
 
-        // Extend as constant to the left
-        if x <= x_min {
-            // F(x) = y_min * (x - x_min)
-            // This gives F(x_min) = 0
-            return y_min * (x - x_min);
+        // Cursor into self.xs: invariant is xs[seg] <= x for interior queries
+        let mut seg = 0usize;
+
+        for &x in query_xs {
+            if x <= x_min {
+                results.push(y_min * (x - x_min));
+                continue;
+            }
+            if x >= x_max {
+                results.push(f_at_max + y_max * (x - x_max));
+                continue;
+            }
+
+            // Advance seg so that xs[seg] <= x and (seg+1 == n or xs[seg+1] > x)
+            while seg + 1 < n && self.xs[seg + 1] <= x {
+                seg += 1;
+            }
+
+            if self.xs[seg] == x {
+                results.push(self.cumulative_areas[seg]);
+            } else {
+                // Interpolate within segment [seg, seg+1]
+                let x0 = self.xs[seg];
+                let x1 = self.xs[seg + 1];
+                let y0 = self.ys[seg];
+                let y1 = self.ys[seg + 1];
+
+                let dx = x - x0;
+                let slope = (y1 - y0) / (x1 - x0);
+                let y_at_x = y0 + slope * dx;
+                let avg_y = (y0 + y_at_x) / T::from_float(2.0);
+                results.push(self.cumulative_areas[seg] + dx * avg_y);
+            }
         }
 
-        // Extend as constant to the right
-        if x >= x_max {
-            // F(x) = F(x_max) + y_max * (x - x_max)
-            let f_at_max = *self.cumulative_areas.last().unwrap();
-            return f_at_max + y_max * (x - x_max);
-        }
-
-        // Binary search to find segment for interior points
-        let i = match self.xs.binary_search_by(|&xi| xi.partial_cmp(&x).unwrap()) {
-            Ok(idx) => return self.cumulative_areas[idx],
-            Err(idx) => idx - 1,
-        };
-
-        // Interpolate within segment i
-        let x0 = self.xs[i];
-        let x1 = self.xs[i + 1];
-        let y0 = self.ys[i];
-        let y1 = self.ys[i + 1];
-
-        let dx = x - x0;
-        let slope = (y1 - y0) / (x1 - x0);
-        let y_at_x = y0 + slope * dx;
-        let avg_y = (y0 + y_at_x) / T::from_float(2.0);
-        let area = dx * avg_y;
-
-        self.cumulative_areas[i] + area
+        results
     }
+}
+
+/// Merge two sorted slices into a single sorted Vec.
+fn sorted_merge<T: Coordinate>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut result = Vec::with_capacity(a.len() + b.len());
+    let (mut ia, mut ib) = (0, 0);
+    while ia < a.len() && ib < b.len() {
+        if a[ia].partial_cmp(&b[ib]).unwrap() != std::cmp::Ordering::Greater {
+            result.push(a[ia]);
+            ia += 1;
+        } else {
+            result.push(b[ib]);
+            ib += 1;
+        }
+    }
+    result.extend_from_slice(&a[ia..]);
+    result.extend_from_slice(&b[ib..]);
+    result
 }
 
 /// Fit a quadratic through three points
