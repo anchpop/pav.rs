@@ -1,4 +1,4 @@
-use pav_regression::{IsotonicRegression, Point, SmoothRegression};
+use pav_regression::{IsotonicRegression, Point, RegressionEvaluator, SmoothRegression};
 
 fn main() {
     // Example: Frequency-based measurements with some noise
@@ -17,9 +17,10 @@ fn main() {
 
     println!("Building isotonic regression...");
     let regression = IsotonicRegression::new_ascending(&measurements).unwrap();
+    let evaluator = RegressionEvaluator::new(regression.clone());
 
     println!("Creating smoothed regression with window=20...");
-    let smooth = SmoothRegression::from_regression(&regression, 20.0);
+    let smooth = SmoothRegression::from_regression(regression, 20.0);
 
     println!("\nComparing approaches for frequency=550:");
     let base_freq = 550.0;
@@ -29,9 +30,9 @@ fn main() {
     let lower_freq = base_freq * 0.8;
     let upper_freq = base_freq * 1.2;
     let predictions = [
-        regression.interpolate(lower_freq).unwrap(),
-        regression.interpolate(base_freq).unwrap(),
-        regression.interpolate(upper_freq).unwrap(),
+        evaluator.interpolate(lower_freq).unwrap(),
+        evaluator.interpolate(base_freq).unwrap(),
+        evaluator.interpolate(upper_freq).unwrap(),
     ];
     let avg = (predictions[0] + predictions[1] + predictions[2]) / 3.0;
     println!("  Lower ({}): {:.2}", lower_freq, predictions[0]);

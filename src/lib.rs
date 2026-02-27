@@ -24,8 +24,8 @@
 //! What we'd really like to be able to do is estimate, for any given _x_, what _y_ will be, or alternatively for any given _y_, what _x_ would be required.
 //!
 //! But of course real-world data is noisy, and is unlikely to be strictly isotonic, so we want something that allows us to feed in this raw noisy data, figure out the
-//! actual relationship between _x_ and _y_, and then use this to allow us to predict _y_ given _x_ (using the `interpolate` method), or to predict what value of _x_ will
-//! give us a particular value of _y_ (using the `invert` method).
+//! actual relationship between _x_ and _y_, and then use this to allow us to predict _y_ given _x_ (using the `interpolate` method on `RegressionEvaluator`), or to predict what value of _x_ will
+//! give us a particular value of _y_ (using the `invert` method on `RegressionEvaluator`).
 //! This is the purpose of the pair-adjacent-violators algorithm.
 //!
 //! # ...and why should I care?
@@ -46,7 +46,7 @@
 //! ## Basic Usage
 //!
 //! ```
-//! use pav_regression::{Point, IsotonicRegression};
+//! use pav_regression::{Point, IsotonicRegression, RegressionEvaluator};
 //!
 //! // Create some data points with noise
 //! let points = vec![
@@ -59,12 +59,15 @@
 //! // Build an ascending isotonic regression
 //! let regression = IsotonicRegression::new_ascending(&points).unwrap();
 //!
+//! // Create an evaluator for O(log n) queries
+//! let evaluator = RegressionEvaluator::new(regression);
+//!
 //! // Predict y for a given x (interpolate)
-//! let y = regression.interpolate(1.5).unwrap();
+//! let y = evaluator.interpolate(1.5).unwrap();
 //! println!("At x=1.5, predicted y={}", y);
 //!
 //! // Find x for a given y (invert)
-//! let x = regression.invert(2.5).unwrap();
+//! let x = evaluator.invert(2.5).unwrap();
 //! println!("To get y=2.5, need x={}", x);
 //! ```
 //!
@@ -87,7 +90,7 @@
 //! let regression = IsotonicRegression::new_ascending(&points).unwrap();
 //!
 //! // Then create a smoothed version with window half-width of 20
-//! let smooth = SmoothRegression::from_regression(&regression, 20.0);
+//! let smooth = SmoothRegression::from_regression(regression, 20.0);
 //!
 //! // Now interpolation is pre-smoothed - much faster than smoothing at query time!
 //! let y = smooth.interpolate(250.0).unwrap();
@@ -97,7 +100,7 @@
 //! This is particularly useful when you were doing manual smoothing like:
 //!
 //! ```
-//! use pav_regression::{Point, IsotonicRegression, SmoothRegression};
+//! use pav_regression::{Point, IsotonicRegression, RegressionEvaluator, SmoothRegression};
 //!
 //! let points = vec![
 //!     Point::new(100.0_f64, 10.0),
@@ -105,16 +108,17 @@
 //!     Point::new(300.0, 35.0),
 //! ];
 //! let regression = IsotonicRegression::new_ascending(&points).unwrap();
+//! let evaluator = RegressionEvaluator::new(regression.clone());
 //!
 //! // OLD WAY: Smooth at query time (3 lookups per query!)
 //! let base = 150.0_f64;
-//! let lower = regression.interpolate(base * 0.8).unwrap();
-//! let middle = regression.interpolate(base).unwrap();
-//! let upper = regression.interpolate(base * 1.2).unwrap();
+//! let lower = evaluator.interpolate(base * 0.8).unwrap();
+//! let middle = evaluator.interpolate(base).unwrap();
+//! let upper = evaluator.interpolate(base * 1.2).unwrap();
 //! let smoothed_old = (lower + middle + upper) / 3.0;
 //!
 //! // NEW WAY: Pre-smooth once, then fast lookups
-//! let smooth = SmoothRegression::from_regression(&regression, base * 0.2);
+//! let smooth = SmoothRegression::from_regression(regression, base * 0.2);
 //! let smoothed_new = smooth.interpolate(base).unwrap();
 //! // 3x faster and invertible!
 //!
@@ -134,11 +138,15 @@ pub mod point;
 /// Module containing the `IsotonicRegression` struct and implementation.
 pub mod isotonic_regression;
 
+/// Module containing the `RegressionEvaluator` struct for O(log n) queries.
+pub mod regression_evaluator;
+
 /// Module containing the `SmoothRegression` struct and implementation.
 pub mod smooth_regression;
 
 pub use coordinate::Coordinate;
 pub use isotonic_regression::IsotonicRegression;
 pub use point::Point;
+pub use regression_evaluator::RegressionEvaluator;
 pub use smooth_regression::SmoothRegression;
 pub use weight::{UnitWeight, Weight};

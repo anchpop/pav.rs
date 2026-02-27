@@ -1,4 +1,4 @@
-use pav_regression::{IsotonicRegression, Point};
+use pav_regression::{IsotonicRegression, Point, RegressionEvaluator};
 
 fn main() {
     // Create some example data
@@ -11,6 +11,7 @@ fn main() {
     ];
 
     let regression = IsotonicRegression::new_ascending(&points).unwrap();
+    let evaluator = RegressionEvaluator::new(regression);
 
     println!("Isotonic Regression Example");
     println!("===========================\n");
@@ -18,7 +19,7 @@ fn main() {
     // Forward: given x, find y
     println!("Forward (interpolate - given x, find y):");
     for x in [0.5, 1.5, 2.5, 3.5] {
-        let y = regression.interpolate(x).unwrap();
+        let y = evaluator.interpolate(x).unwrap();
         println!("  x = {:.1} -> y = {:.2}", x, y);
     }
     println!();
@@ -26,7 +27,7 @@ fn main() {
     // Inverse: given y, find x
     println!("Inverse (invert - given y, find x):");
     for y in [2.0, 5.0, 10.0, 15.0] {
-        let x = regression.invert(y).unwrap();
+        let x = evaluator.invert(y).unwrap();
         println!("  y = {:.1} -> x = {:.2}", y, x);
     }
     println!();
@@ -34,8 +35,8 @@ fn main() {
     // Round trip demonstration
     println!("Round trip verification:");
     let original_x = 2.7;
-    let y = regression.interpolate(original_x).unwrap();
-    let recovered_x = regression.invert(y).unwrap();
+    let y = evaluator.interpolate(original_x).unwrap();
+    let recovered_x = evaluator.invert(y).unwrap();
     println!("  Start with x = {}", original_x);
     println!("  Interpolate to get y = {:.2}", y);
     println!("  Invert to recover x = {:.2}", recovered_x);

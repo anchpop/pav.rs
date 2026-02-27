@@ -1,4 +1,4 @@
-use pav_regression::{IsotonicRegression, Point};
+use pav_regression::{IsotonicRegression, Point, RegressionEvaluator};
 
 fn main() {
     // Example: A retailer wants to understand the relationship between price and sales
@@ -12,13 +12,14 @@ fn main() {
     ];
 
     let regression = IsotonicRegression::new_descending(&data).unwrap();
+    let evaluator = RegressionEvaluator::new(regression);
 
     println!("Price-to-Sales Prediction (interpolate):");
     println!("=========================================");
 
     // Use interpolate to predict sales at different prices
     for price in [12.0, 17.5, 22.5, 27.5] {
-        let predicted_sales = regression.interpolate(price).unwrap();
+        let predicted_sales = evaluator.interpolate(price).unwrap();
         println!(
             "  At price ${:.2}, we predict {:.1} sales",
             price, predicted_sales
@@ -30,7 +31,7 @@ fn main() {
 
     // Use invert to find what price will give us target sales
     for target_sales in [90.0, 75.0, 65.0, 50.0] {
-        let required_price = regression.invert(target_sales).unwrap();
+        let required_price = evaluator.invert(target_sales).unwrap();
         println!(
             "  To sell {:.0} units, set price at ${:.2}",
             target_sales, required_price
@@ -42,8 +43,8 @@ fn main() {
 
     // Verify that invert and interpolate are true inverses
     let test_price = 18.0;
-    let sales = regression.interpolate(test_price).unwrap();
-    let price_back = regression.invert(sales).unwrap();
+    let sales = evaluator.interpolate(test_price).unwrap();
+    let price_back = evaluator.invert(sales).unwrap();
     println!(
         "  Price ${:.2} -> {:.1} sales -> ${:.2} price",
         test_price, sales, price_back

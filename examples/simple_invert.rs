@@ -1,4 +1,4 @@
-use pav_regression::{IsotonicRegression, Point};
+use pav_regression::{IsotonicRegression, Point, RegressionEvaluator};
 
 fn main() {
     // Simple ascending example
@@ -10,6 +10,7 @@ fn main() {
     ];
 
     let regression = IsotonicRegression::new_ascending(&points).unwrap();
+    let evaluator = RegressionEvaluator::new(regression);
 
     println!("Simple linear regression:");
     println!("========================");
@@ -18,22 +19,22 @@ fn main() {
     // Forward: given x, find y
     println!("Forward (interpolate):");
     let x = 1.5;
-    let y = regression.interpolate(x).unwrap();
+    let y = evaluator.interpolate(x).unwrap();
     println!("  x = {} -> y = {}", x, y);
     println!();
 
     // Inverse: given y, find x
     println!("Inverse (invert):");
     let y = 2.5;
-    let x = regression.invert(y).unwrap();
+    let x = evaluator.invert(y).unwrap();
     println!("  y = {} -> x = {}", y, x);
     println!();
 
     // Round trip
     println!("Round trip:");
     let original_x = 1.7;
-    let y = regression.interpolate(original_x).unwrap();
-    let recovered_x = regression.invert(y).unwrap();
+    let y = evaluator.interpolate(original_x).unwrap();
+    let recovered_x = evaluator.invert(y).unwrap();
     println!("  x = {} -> y = {} -> x = {}", original_x, y, recovered_x);
     println!(
         "  Perfect match: {}",

@@ -1,5 +1,6 @@
 use crate::coordinate::Coordinate;
-use crate::isotonic_regression::IsotonicRegression;
+use crate::isotonic_regression::{isotonic, isotonic_presorted, Direction, IsotonicRegression};
+use crate::point::Point;
 use crate::weight::Weight;
 use serde::Serialize;
 
@@ -24,7 +25,73 @@ pub struct SmoothRegression<T: Coordinate> {
 }
 
 impl<T: Coordinate> SmoothRegression<T> {
-    /// Create a smoothed regression from an isotonic regression.
+    /// Create a smoothed regression directly from raw points.
+    ///
+    /// This runs isotonic regression (PAV) and then smooths in one step,
+    /// avoiding any intermediate allocations.
+    ///
+    /// # Arguments
+    /// * `points` - The raw data points
+    /// * `direction` - Ascending or descending regression
+    /// * `window_half_width` - Half-width of the box filter window (w)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::{Point, SmoothRegression};
+    /// use pav_regression::isotonic_regression::Direction;
+    ///
+    /// let points = vec![
+    ///     Point::new(0.0, 0.0),
+    ///     Point::new(1.0, 1.0),
+    ///     Point::new(2.0, 2.0),
+    /// ];
+    /// let smooth = SmoothRegression::new(&points, Direction::Ascending, 0.2);
+    /// ```
+    pub fn new<W: Weight>(
+        points: &[Point<T, W>],
+        direction: Direction,
+        window_half_width: T,
+    ) -> SmoothRegression<T> {
+        let (iso_points, _) = isotonic(points, direction);
+        Self::build(iso_points, window_half_width)
+    }
+
+    /// Create a smoothed regression directly from pre-sorted points.
+    ///
+    /// The caller must ensure the points are sorted in non-decreasing order by x.
+    ///
+    /// # Arguments
+    /// * `points` - The raw data points, sorted by x
+    /// * `direction` - Ascending or descending regression
+    /// * `window_half_width` - Half-width of the box filter window (w)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::{Point, SmoothRegression};
+    /// use pav_regression::isotonic_regression::Direction;
+    ///
+    /// let points = vec![
+    ///     Point::new(0.0, 0.0),
+    ///     Point::new(1.0, 1.0),
+    ///     Point::new(2.0, 2.0),
+    /// ];
+    /// let smooth = SmoothRegression::new_sorted(&points, Direction::Ascending, 0.2);
+    /// ```
+    pub fn new_sorted<W: Weight>(
+        points: &[Point<T, W>],
+        direction: Direction,
+        window_half_width: T,
+    ) -> SmoothRegression<T> {
+        let (iso_points, _) = isotonic_presorted(points.to_vec(), direction);
+        Self::build(iso_points, window_half_width)
+    }
+
+    /// Create a smoothed regression from an isotonic regression (by value).
+    ///
+    /// Takes ownership of the regression to avoid cloning — the sorted points
+    /// are used directly with zero copies.
     ///
     /// # Arguments
     /// * `regression` - The isotonic regression to smooth
@@ -41,14 +108,19 @@ impl<T: Coordinate> SmoothRegression<T> {
     ///     Point::new(2.0, 2.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// let smooth = SmoothRegression::from_regression(&regression, 0.2);
+    /// let smooth = SmoothRegression::from_regression(regression, 0.2);
     /// ```
     pub fn from_regression<W: Weight>(
-        regression: &IsotonicRegression<T, W>,
+        regression: IsotonicRegression<T, W>,
         window_half_width: T,
     ) -> SmoothRegression<T> {
-        let points = regression.get_points_sorted();
+        let points = regression.into_points();
+        Self::build(points, window_half_width)
+    }
 
+    /// Core builder: takes sorted isotonic points (any weight type) and builds
+    /// the piecewise quadratic smooth regression.
+    fn build<W: Weight>(points: Vec<Point<T, W>>, window_half_width: T) -> SmoothRegression<T> {
         if points.is_empty() {
             return SmoothRegression {
                 boundaries: Vec::new(),
@@ -67,17 +139,13 @@ impl<T: Coordinate> SmoothRegression<T> {
         // Step 1: Build cumulative integral function
         let cumulative = CumulativeIntegral::new(&points);
 
-        // Step 2: Generate segment boundaries
-        let mut boundaries = Vec::new();
+        // Step 2: Generate segment boundaries (fused into one loop)
+        let mut boundaries = Vec::with_capacity(points.len() * 3);
         for point in &points {
             let x = *point.x();
             boundaries.push(x - window_half_width);
+            boundaries.push(x);
             boundaries.push(x + window_half_width);
-        }
-
-        // Also include original knot positions
-        for point in &points {
-            boundaries.push(*point.x());
         }
 
         boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -86,35 +154,34 @@ impl<T: Coordinate> SmoothRegression<T> {
         // Clamp to original domain
         boundaries.retain(|&x| x >= x_min && x <= x_max);
 
-        // Step 3: Compute quadratic coefficients for each segment
-        let mut coeffs = Vec::new();
+        // Step 3: Compute quadratic coefficients for each segment,
+        // caching boundary y-values to avoid recomputing shared endpoints
         let w = window_half_width;
+        let two_w = T::from_float(2.0) * w;
+        let num_segments = boundaries.len().saturating_sub(1);
+        let mut coeffs = Vec::with_capacity(num_segments);
+        let mut boundary_ys = Vec::with_capacity(boundaries.len());
 
-        for i in 0..boundaries.len().saturating_sub(1) {
+        // Compute first boundary y
+        if !boundaries.is_empty() {
+            let y0 = cumulative.integrate(boundaries[0] - w, boundaries[0] + w, x_min, x_max) / two_w;
+            boundary_ys.push(y0);
+        }
+
+        for i in 0..num_segments {
             let x0 = boundaries[i];
             let x1 = boundaries[i + 1];
             let xm = (x0 + x1) / T::from_float(2.0);
 
-            // Evaluate smoothed function at three points
-            let y0 = cumulative.integrate(x0 - w, x0 + w, x_min, x_max) / (T::from_float(2.0) * w);
-            let y1 = cumulative.integrate(x1 - w, x1 + w, x_min, x_max) / (T::from_float(2.0) * w);
-            let ym = cumulative.integrate(xm - w, xm + w, x_min, x_max) / (T::from_float(2.0) * w);
+            let y0 = boundary_ys[i]; // Already computed
+            let y1 = cumulative.integrate(x1 - w, x1 + w, x_min, x_max) / two_w;
+            let ym = cumulative.integrate(xm - w, xm + w, x_min, x_max) / two_w;
 
-            // Solve for quadratic coefficients: y = ax² + bx + c
+            boundary_ys.push(y1);
+
             let (a, b, c) = fit_quadratic(x0, y0, xm, ym, x1, y1);
             coeffs.push((a, b, c));
         }
-
-        // Precompute y-values at boundaries for inversion
-        let boundary_ys: Vec<T> = boundaries
-            .iter()
-            .enumerate()
-            .map(|(i, &x)| {
-                let seg_idx = i.min(coeffs.len() - 1);
-                let (a, b, c) = coeffs[seg_idx];
-                a * x * x + b * x + c
-            })
-            .collect();
 
         SmoothRegression {
             boundaries,
@@ -139,7 +206,7 @@ impl<T: Coordinate> SmoothRegression<T> {
     ///     Point::new(2.0, 2.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// let smooth = SmoothRegression::from_regression(&regression, 0.2);
+    /// let smooth = SmoothRegression::from_regression(regression, 0.2);
     /// let y = smooth.interpolate(1.5);
     /// ```
     pub fn interpolate(&self, x: T) -> Option<T> {
@@ -183,7 +250,7 @@ impl<T: Coordinate> SmoothRegression<T> {
     ///     Point::new(2.0, 2.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// let smooth = SmoothRegression::from_regression(&regression, 0.2);
+    /// let smooth = SmoothRegression::from_regression(regression, 0.2);
     /// let x = smooth.invert(1.5);
     /// ```
     pub fn invert(&self, y: T) -> Option<T> {
@@ -291,7 +358,7 @@ struct CumulativeIntegral<T: Coordinate> {
 }
 
 impl<T: Coordinate> CumulativeIntegral<T> {
-    fn new<W: Weight>(points: &[crate::point::Point<T, W>]) -> Self {
+    fn new<W: Weight>(points: &[Point<T, W>]) -> Self {
         let n = points.len();
         let mut xs = Vec::with_capacity(n);
         let mut ys = Vec::with_capacity(n);
@@ -325,7 +392,7 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         self.eval_cumulative(x_end) - self.eval_cumulative(x_start)
     }
 
-    /// Evaluate the cumulative integral F(x) = ∫[-∞, x] f(t) dt
+    /// Evaluate the cumulative integral F(x) = integral[-inf, x] f(t) dt
     /// The function is extended as constant beyond its domain:
     /// - For t < x_min: f(t) = y_min
     /// - For t > x_max: f(t) = y_max
@@ -378,9 +445,9 @@ impl<T: Coordinate> CumulativeIntegral<T> {
 /// Fit a quadratic through three points
 fn fit_quadratic<T: Coordinate>(x0: T, y0: T, x1: T, y1: T, x2: T, y2: T) -> (T, T, T) {
     // Solve the system:
-    // y0 = a*x0² + b*x0 + c
-    // y1 = a*x1² + b*x1 + c
-    // y2 = a*x2² + b*x2 + c
+    // y0 = a*x0^2 + b*x0 + c
+    // y1 = a*x1^2 + b*x1 + c
+    // y2 = a*x2^2 + b*x2 + c
 
     let x0_sq = x0 * x0;
     let x1_sq = x1 * x1;
@@ -419,7 +486,7 @@ mod tests {
             Point::new(2.0, 2.0),
         ];
         let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let smooth = SmoothRegression::from_regression(&regression, 0.1);
+        let smooth = SmoothRegression::from_regression(regression, 0.1);
 
         // Should be close to linear in the middle
         let y = smooth.interpolate(1.0).unwrap();
@@ -435,7 +502,7 @@ mod tests {
             Point::new(3.0, 5.0),
         ];
         let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let smooth = SmoothRegression::from_regression(&regression, 0.1);
+        let smooth = SmoothRegression::from_regression(regression, 0.1);
 
         // Check monotonicity in the interior (away from boundaries)
         let mut prev_y = 0.0f64;
@@ -464,7 +531,7 @@ mod tests {
             Point::new(3.0, 3.0),
         ];
         let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let smooth = SmoothRegression::from_regression(&regression, 0.2);
+        let smooth = SmoothRegression::from_regression(regression, 0.2);
 
         // Test round trip
         let test_x = 1.5;
@@ -484,7 +551,7 @@ mod tests {
             Point::new(4.0, 1.0),
         ];
         let regression = IsotonicRegression::new_descending(&points).unwrap();
-        let smooth = SmoothRegression::from_regression(&regression, 0.3);
+        let smooth = SmoothRegression::from_regression(regression, 0.3);
 
         // Test round trip for descending
         let test_x = 2.5;
@@ -521,7 +588,7 @@ mod tests {
             Point::new(1.0, 5.0),
         ];
         let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let smooth = SmoothRegression::from_regression(&regression, 0.3);
+        let smooth = SmoothRegression::from_regression(regression, 0.3);
 
         // Check monotonicity near left boundary
         let mut prev_y = smooth.interpolate(0.0).unwrap();
@@ -554,5 +621,29 @@ mod tests {
                 prev_y = y;
             }
         }
+    }
+
+    #[test]
+    fn test_smooth_new_direct() {
+        let points = vec![
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 2.0),
+        ];
+        let smooth = SmoothRegression::new(&points, Direction::Ascending, 0.2);
+        let y = smooth.interpolate(1.0).unwrap();
+        assert!((y - 1.0).abs() < 0.2, "y={} should be close to 1.0", y);
+    }
+
+    #[test]
+    fn test_smooth_new_sorted_direct() {
+        let points = vec![
+            Point::new(0.0, 0.0),
+            Point::new(1.0, 1.0),
+            Point::new(2.0, 2.0),
+        ];
+        let smooth = SmoothRegression::new_sorted(&points, Direction::Ascending, 0.2);
+        let y = smooth.interpolate(1.0).unwrap();
+        assert!((y - 1.0).abs() < 0.2, "y={} should be close to 1.0", y);
     }
 }

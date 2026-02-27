@@ -1,7 +1,6 @@
 use crate::coordinate::Coordinate;
-use crate::point::{interpolate_two_points, interpolate_x_from_y, Point};
+use crate::point::Point;
 use crate::weight::Weight;
-use eytzinger::SliceExt;
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 use thiserror::Error;
@@ -16,20 +15,20 @@ pub enum IsotonicRegressionError {
 }
 
 /// A vector of points forming an isotonic regression, along with the
-/// centroid point of the original set.
+/// centroid point of the original set. Points are stored in sorted order by x.
 #[derive(Debug, Clone, Serialize)]
 pub struct IsotonicRegression<T: Coordinate, W: Weight = f64> {
-    direction: Direction,
-    points: Vec<Point<T, W>>,
-    centroid_point: Centroid<T>,
-    intersect_origin: bool,
+    pub(crate) direction: Direction,
+    pub(crate) points: Vec<Point<T, W>>,
+    pub(crate) centroid_point: Centroid<T>,
+    pub(crate) intersect_origin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct Centroid<T: Coordinate> {
-    sum_x: T,
-    sum_y: T,
-    sum_weight: T,
+pub(crate) struct Centroid<T: Coordinate> {
+    pub(crate) sum_x: T,
+    pub(crate) sum_y: T,
+    pub(crate) sum_weight: T,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -47,7 +46,7 @@ impl<T: Coordinate + Display, W: Weight> Display for IsotonicRegression<T, W> {
         writeln!(f, "IsotonicRegression {{")?;
         writeln!(f, "\tdirection: {:?},", self.direction)?;
         writeln!(f, "\tpoints:")?;
-        for point in &self.get_points_sorted() {
+        for point in &self.points {
             writeln!(
                 f,
                 "\t\t{}\t{:.2}\t{:.2}",
@@ -82,7 +81,7 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
+    /// assert_eq!(regression.get_points().len(), 4);
     /// ```
     pub fn new_ascending(
         points: &[Point<T, W>],
@@ -104,7 +103,7 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     ///     Point::new(3.0, 1.0),
     /// ];
     /// let regression = IsotonicRegression::new_descending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
+    /// assert_eq!(regression.get_points().len(), 4);
     /// ```
     pub fn new_descending(
         points: &[Point<T, W>],
@@ -129,7 +128,7 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new(&points, Direction::Ascending, false).unwrap();
-    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
+    /// assert_eq!(regression.get_points().len(), 4);
     /// ```
     pub fn new(
         points: &[Point<T, W>],
@@ -144,32 +143,20 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
             }
         }
 
-        let mut sum_x = T::zero();
-        let mut sum_y = T::zero();
-        let mut sum_weight = T::zero();
-        for point in points {
-            let w: T = point.weight.to_coord();
-            sum_x += *point.x() * w;
-            sum_y += *point.y() * w;
-            sum_weight += w;
-        }
-
-        let mut isotonic_points = isotonic(points, direction);
-        isotonic_points.eytzingerize(&mut eytzinger::permutation::InplacePermutator);
+        let (isotonic_points, centroid) = isotonic(points, direction);
 
         Ok(IsotonicRegression {
             direction,
             points: isotonic_points,
-            centroid_point: Centroid {
-                sum_x,
-                sum_y,
-                sum_weight,
-            },
+            centroid_point: centroid,
             intersect_origin,
         })
     }
 
-    /// Find the _y_ point at position `at_x` or None if the regression is empty.
+    /// Find an ascending isotonic regression from a set of points that are already sorted by x.
+    ///
+    /// This skips the sort step, which can be faster if the input is already sorted.
+    /// The caller must ensure the points are sorted in non-decreasing order by x.
     ///
     /// # Examples
     ///
@@ -182,69 +169,70 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     ///     Point::new(2.0, 1.5),
     ///     Point::new(3.0, 3.0),
     /// ];
-    /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// let interpolated_y = regression.interpolate(1.5).unwrap();
-    /// assert_eq!(interpolated_y, 1.75);
+    /// let regression = IsotonicRegression::new_ascending_sorted(&points).unwrap();
+    /// assert_eq!(regression.get_points().len(), 4);
     /// ```
-    #[must_use]
-    pub fn interpolate(&self, at_x: T) -> Option<T> {
-        if self.points.is_empty() {
-            return None;
-        }
-
-        let interpolation = if self.points.len() == 1 {
-            *self.points[0].y()
-        } else {
-            let (lte, gt) = self
-                .points
-                .eytzinger_interpolative_search_by(|p| p.x().partial_cmp(&at_x).unwrap());
-
-            match (lte, gt) {
-                // Found exact match or need to interpolate between two points
-                (Some(lower), Some(upper)) => {
-                    interpolate_two_points(&self.points[lower], &self.points[upper], at_x)
-                }
-                // Requested point meets or exceeds the upper bound
-                (Some(upper), None) => {
-                    // at_x is beyond the last point - interpolate with centroid
-                    interpolate_two_points(
-                        &self.get_centroid_point().unwrap(),
-                        &self.points[upper],
-                        at_x,
-                    )
-                }
-                // Requested point is below the lower bound
-                (None, Some(lower)) => {
-                    // at_x is before the first point
-                    if self.intersect_origin {
-                        interpolate_two_points(
-                            &Point::new_with_weight(T::zero(), T::zero(), W::unit()),
-                            &self.points[lower],
-                            at_x,
-                        )
-                    } else {
-                        interpolate_two_points(
-                            &self.points[lower],
-                            &self.get_centroid_point().unwrap(),
-                            at_x,
-                        )
-                    }
-                }
-                // Should never happen - only possible if the slice is empty, which we already checked
-                (None, None) => {
-                    debug_assert!(
-                        false,
-                        "Got None, None from eytzinger_interpolative_search_by on non-empty slice"
-                    );
-                    return None;
-                }
-            }
-        };
-
-        Some(interpolation)
+    pub fn new_ascending_sorted(
+        points: &[Point<T, W>],
+    ) -> Result<IsotonicRegression<T, W>, IsotonicRegressionError> {
+        IsotonicRegression::new_sorted(points, Direction::Ascending, false)
     }
 
-    /// Retrieve the points that make up the isotonic regression. The points are NOT sorted by x value - they are in eytzinger order.
+    /// Find a descending isotonic regression from a set of points that are already sorted by x.
+    ///
+    /// This skips the sort step, which can be faster if the input is already sorted.
+    /// The caller must ensure the points are sorted in non-decreasing order by x.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use pav_regression::{Point, IsotonicRegression};
+    ///
+    /// let points = vec![
+    ///     Point::new(0.0, 3.0),
+    ///     Point::new(1.0, 2.0),
+    ///     Point::new(2.0, 2.5),
+    ///     Point::new(3.0, 1.0),
+    /// ];
+    /// let regression = IsotonicRegression::new_descending_sorted(&points).unwrap();
+    /// assert_eq!(regression.get_points().len(), 4);
+    /// ```
+    pub fn new_descending_sorted(
+        points: &[Point<T, W>],
+    ) -> Result<IsotonicRegression<T, W>, IsotonicRegressionError> {
+        IsotonicRegression::new_sorted(points, Direction::Descending, false)
+    }
+
+    /// Find an isotonic regression from a set of points that are already sorted by x.
+    ///
+    /// This skips the sort step, which can be faster if the input is already sorted.
+    /// The caller must ensure the points are sorted in non-decreasing order by x.
+    ///
+    /// If `intersect_origin` is true, the regression will intersect the origin (0,0) and all points must be >= 0 on both axes.
+    pub fn new_sorted(
+        points: &[Point<T, W>],
+        direction: Direction,
+        intersect_origin: bool,
+    ) -> Result<IsotonicRegression<T, W>, IsotonicRegressionError> {
+        if intersect_origin {
+            for point in points {
+                if point.x().is_sign_negative() || point.y().is_sign_negative() {
+                    return Err(IsotonicRegressionError::NegativePointWithIntersectOrigin);
+                }
+            }
+        }
+
+        let (isotonic_points, centroid) = isotonic_presorted(points.to_vec(), direction);
+
+        Ok(IsotonicRegression {
+            direction,
+            points: isotonic_points,
+            centroid_point: centroid,
+            intersect_origin,
+        })
+    }
+
+    /// Retrieve the points that make up the isotonic regression, sorted by x value.
     ///
     /// # Examples
     ///
@@ -258,17 +246,15 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     ///     Point::new(3.0, 3.0),
     /// ];
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// assert_eq!(regression.get_points().len(), 4); // All points preserved
+    /// assert_eq!(regression.get_points().len(), 4);
     /// ```
     pub fn get_points(&self) -> &[Point<T, W>] {
         &self.points
     }
 
-    /// Retrieve the points that make up the isotonic regression, sorted by x value.
-    pub fn get_points_sorted(&self) -> Vec<Point<T, W>> {
-        let mut points = self.points.clone();
-        points.sort_by(|a, b| a.x().partial_cmp(b.x()).unwrap());
-        points
+    /// Consume the regression and return the owned points, sorted by x value.
+    pub fn into_points(self) -> Vec<Point<T, W>> {
+        self.points
     }
 
     /// Retrieve the mean point of the original point set.
@@ -330,9 +316,8 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
 
         let mut new_points = self.points.clone();
         new_points.extend_from_slice(points);
-        self.points = isotonic(&new_points, self.direction);
-        self.points
-            .eytzingerize(&mut eytzinger::permutation::InplacePermutator);
+        let (iso_points, _) = isotonic(&new_points, self.direction);
+        self.points = iso_points;
     }
 
     /// Remove points from the regression.
@@ -371,9 +356,8 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
                 new_points.remove(pos);
             }
         }
-        self.points = isotonic(&new_points, self.direction);
-        self.points
-            .eytzingerize(&mut eytzinger::permutation::InplacePermutator);
+        let (iso_points, _) = isotonic(&new_points, self.direction);
+        self.points = iso_points;
     }
 
     /// Returns the number of points in the regression.
@@ -411,116 +395,30 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
         self.centroid_point.sum_weight == T::zero()
     }
 
-    /// Find the _x_ value that would produce the given `at_y` value, or None if the regression is empty.
-    /// This is the inverse operation of `interpolate`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use pav_regression::{Point, IsotonicRegression};
-    ///
-    /// let points = vec![
-    ///     Point::new(0.0_f64, 1.0),
-    ///     Point::new(1.0, 2.0),
-    ///     Point::new(2.0, 1.5),
-    ///     Point::new(3.0, 3.0),
-    /// ];
-    /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
-    /// let inverted_x = regression.invert(1.75).unwrap();
-    /// // 1.75 is the y-value at x=1.5, so we should get back approximately 1.5
-    /// assert!((inverted_x - 1.5).abs() < 0.01);
-    /// ```
-    #[must_use]
-    pub fn invert(&self, at_y: T) -> Option<T> {
-        if self.points.is_empty() {
-            return None;
-        }
+    /// Returns the direction of the regression.
+    pub fn direction(&self) -> Direction {
+        self.direction
+    }
 
-        if self.points.len() == 1 {
-            return Some(*self.points[0].x());
-        }
-
-        // We need to work with sorted points for binary search on y values
-        let sorted_points = self.get_points_sorted();
-
-        // Binary search to find the position where at_y would fit
-        let pos = match self.direction {
-            Direction::Ascending => {
-                // For ascending, y values are non-decreasing
-                sorted_points.binary_search_by(|p| p.y().partial_cmp(&at_y).unwrap())
-            }
-            Direction::Descending => {
-                // For descending, y values are non-increasing, so reverse the comparison
-                sorted_points.binary_search_by(|p| at_y.partial_cmp(p.y()).unwrap())
-            }
-        };
-
-        match pos {
-            Ok(exact_idx) => {
-                // Found exact match - but we need to handle horizontal segments (pooled points)
-                // Find the range of points with the same y value
-                let y_value = sorted_points[exact_idx].y();
-
-                // Find the first point with this y value
-                let mut start_idx = exact_idx;
-                while start_idx > 0 && sorted_points[start_idx - 1].y() == y_value {
-                    start_idx -= 1;
-                }
-
-                // Find the last point with this y value
-                let mut end_idx = exact_idx;
-                while end_idx < sorted_points.len() - 1 && sorted_points[end_idx + 1].y() == y_value
-                {
-                    end_idx += 1;
-                }
-
-                // If there's a range of points with the same y, return the midpoint
-                if start_idx < end_idx {
-                    let start_x = *sorted_points[start_idx].x();
-                    let end_x = *sorted_points[end_idx].x();
-                    Some((start_x + end_x) / T::from_float(2.0))
-                } else {
-                    Some(*sorted_points[exact_idx].x())
-                }
-            }
-            Err(insert_idx) => {
-                // at_y falls between two points or outside the range
-                if insert_idx == 0 {
-                    // at_y is before the first point
-                    if self.intersect_origin {
-                        // Interpolate between origin and first point
-                        let p1 = Point::new_with_weight(T::zero(), T::zero(), W::unit());
-                        let p2 = &sorted_points[0];
-                        Some(interpolate_x_from_y(&p1, p2, at_y))
-                    } else {
-                        // Interpolate between centroid and first point
-                        let centroid = self.get_centroid_point()?;
-                        let p2 = &sorted_points[0];
-                        Some(interpolate_x_from_y(&centroid, p2, at_y))
-                    }
-                } else if insert_idx >= sorted_points.len() {
-                    // at_y is after the last point
-                    let p1 = &sorted_points[sorted_points.len() - 1];
-                    let centroid = self.get_centroid_point()?;
-                    Some(interpolate_x_from_y(p1, &centroid, at_y))
-                } else {
-                    // at_y is between two points
-                    let p1 = &sorted_points[insert_idx - 1];
-                    let p2 = &sorted_points[insert_idx];
-                    Some(interpolate_x_from_y(p1, p2, at_y))
-                }
-            }
-        }
+    /// Returns whether the regression intersects the origin.
+    pub fn intersect_origin(&self) -> bool {
+        self.intersect_origin
     }
 }
 
-#[allow(dead_code)]
-fn isotonic<T: Coordinate, W: Weight>(
+pub(crate) fn isotonic<T: Coordinate, W: Weight>(
     points: &[Point<T, W>],
     direction: Direction,
-) -> Vec<Point<T, W>> {
+) -> (Vec<Point<T, W>>, Centroid<T>) {
     if points.is_empty() {
-        return Vec::new();
+        return (
+            Vec::new(),
+            Centroid {
+                sum_x: T::zero(),
+                sum_y: T::zero(),
+                sum_weight: T::zero(),
+            },
+        );
     }
 
     let mut result: Vec<Point<T, W>> = points.to_vec();
@@ -532,16 +430,44 @@ fn isotonic<T: Coordinate, W: Weight>(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    isotonic_presorted(result, direction)
+}
+
+pub(crate) fn isotonic_presorted<T: Coordinate, W: Weight>(
+    mut result: Vec<Point<T, W>>,
+    direction: Direction,
+) -> (Vec<Point<T, W>>, Centroid<T>) {
+    if result.is_empty() {
+        return (
+            result,
+            Centroid {
+                sum_x: T::zero(),
+                sum_y: T::zero(),
+                sum_weight: T::zero(),
+            },
+        );
+    }
+
     let n = result.len();
 
-    // Single-pass stack-based PAV algorithm.
+    // Single-pass stack-based PAV algorithm with fused centroid accumulation.
     // Each pool is (start_index, end_index, sum_y_weighted, sum_weight).
     // We process points left-to-right, merging adjacent pools that violate monotonicity.
     let mut pools: Vec<(usize, usize, T, T)> = Vec::with_capacity(n);
 
-    for (i, result) in result.iter().enumerate().take(n) {
-        let w: T = result.weight.to_coord();
-        let wy = *result.y() * w;
+    let mut sum_x = T::zero();
+    let mut sum_y = T::zero();
+    let mut sum_weight = T::zero();
+
+    for (i, point) in result.iter().enumerate().take(n) {
+        let w: T = point.weight.to_coord();
+        let wy = *point.y() * w;
+
+        // Accumulate centroid from original y values (before pooling)
+        sum_x += *point.x() * w;
+        sum_y += wy;
+        sum_weight += w;
+
         pools.push((i, i + 1, wy, w));
 
         // Merge backwards while monotonicity is violated
@@ -578,7 +504,14 @@ fn isotonic<T: Coordinate, W: Weight>(
         }
     }
 
-    result
+    (
+        result,
+        Centroid {
+            sum_x,
+            sum_y,
+            sum_weight,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -596,7 +529,7 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(points).unwrap();
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
         assert_eq!(sorted_points.len(), 4); // All points preserved
         assert_eq!(*sorted_points[0].x(), 0.0);
         assert_eq!(*sorted_points[0].y(), 1.0);
@@ -618,7 +551,7 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_descending(points).unwrap();
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
         assert_eq!(sorted_points.len(), 4); // All points preserved
         assert_eq!(*sorted_points[0].x(), 0.0);
         assert_eq!(*sorted_points[0].y(), 3.0);
@@ -636,9 +569,9 @@ mod tests {
             IsotonicRegression::new_ascending(&[Point::new(0.0, 1.0), Point::new(2.0, 2.0)])
                 .unwrap();
         regression.add_points(&[Point::new(1.0, 1.5)]);
-        assert_eq!(regression.get_points_sorted().len(), 3);
-        assert_eq!(*regression.get_points_sorted()[1].x(), 1.0);
-        assert_eq!(*regression.get_points_sorted()[1].y(), 1.5);
+        assert_eq!(regression.get_points().len(), 3);
+        assert_eq!(*regression.get_points()[1].x(), 1.0);
+        assert_eq!(*regression.get_points()[1].y(), 1.5);
     }
 
     #[test]
@@ -651,12 +584,12 @@ mod tests {
         .unwrap();
 
         // Before removal, all 3 points should be present
-        assert_eq!(regression.get_points_sorted().len(), 3);
+        assert_eq!(regression.get_points().len(), 3);
 
         regression.remove_points(&[Point::new(1.0, 2.0)]);
 
         // After removal, 2 points should remain
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
         assert_eq!(sorted_points.len(), 2);
         assert_eq!(*sorted_points[0].x(), 0.0);
         assert_eq!(*sorted_points[1].x(), 2.0);
@@ -680,7 +613,6 @@ mod tests {
         let regression: IsotonicRegression<f64> = IsotonicRegression::new_ascending(&[]).unwrap();
         assert!(regression.is_empty());
         assert_eq!(regression.len(), 0);
-        assert!(regression.interpolate(1.0).is_none());
     }
 
     #[test]
@@ -695,7 +627,7 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(points).unwrap();
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
 
         // All points must be preserved
         assert_eq!(
@@ -730,7 +662,7 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(points).unwrap();
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
 
         // All points must be preserved
         assert_eq!(sorted_points.len(), 4);
@@ -742,10 +674,6 @@ mod tests {
         assert_eq!(*sorted_points[3].x(), 3.0);
 
         // Y-values should be pooled where monotonicity is violated
-        // Points 0 (y=5, w=1) and 1 (y=3, w=2) violate ascending order
-        // They get pooled: (5*1 + 3*2)/(1+2) = 11/3 ≈ 3.666...
-        // Point 2 (y=4) doesn't violate monotonicity with pooled value 11/3
-        // Point 3 (y=10) doesn't violate monotonicity
         assert!((sorted_points[0].y() - 11.0 / 3.0).abs() < 0.0001);
         assert!((sorted_points[1].y() - 11.0 / 3.0).abs() < 0.0001);
         assert_eq!(*sorted_points[2].y(), 4.0);
@@ -753,67 +681,17 @@ mod tests {
     }
 
     #[test]
-    fn test_invert_ascending() {
-        let points = vec![
+    fn test_into_points() {
+        let points = &[
             Point::new(0.0, 1.0),
             Point::new(1.0, 2.0),
-            Point::new(2.0, 1.5),
-            Point::new(3.0, 3.0),
+            Point::new(2.0, 3.0),
         ];
-        let regression = IsotonicRegression::new_ascending(&points).unwrap();
-
-        // Test exact point matches
-        let x_at_1 = regression.invert(1.0).unwrap();
-        assert!((x_at_1 - 0.0).abs() < 0.01);
-
-        // Test interpolated values
-        // At x=1.5, y=1.75 (from the example in the docstring)
-        let x_at_1_75 = regression.invert(1.75).unwrap();
-        assert!((x_at_1_75 - 1.5).abs() < 0.01);
-
-        // Test that interpolate and invert are inverses
-        let test_x = 1.5;
-        let y = regression.interpolate(test_x).unwrap();
-        let inverted_x = regression.invert(y).unwrap();
-        assert!((inverted_x - test_x).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_invert_descending() {
-        let points = vec![
-            Point::new(0.0, 3.0),
-            Point::new(1.0, 2.0),
-            Point::new(2.0, 2.5),
-            Point::new(3.0, 1.0),
-        ];
-        let regression = IsotonicRegression::new_descending(&points).unwrap();
-
-        // Test exact point matches
-        let x_at_3 = regression.invert(3.0).unwrap();
-        assert!((x_at_3 - 0.0).abs() < 0.01);
-
-        let x_at_1 = regression.invert(1.0).unwrap();
-        assert!((x_at_1 - 3.0).abs() < 0.01);
-
-        // Test that interpolate and invert are inverses
-        let test_x = 1.5;
-        let y = regression.interpolate(test_x).unwrap();
-        let inverted_x = regression.invert(y).unwrap();
-        assert!((inverted_x - test_x).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_invert_empty() {
-        let regression: IsotonicRegression<f64> = IsotonicRegression::new_ascending(&[]).unwrap();
-        assert!(regression.invert(1.0).is_none());
-    }
-
-    #[test]
-    fn test_invert_single_point() {
-        let points = vec![Point::new(1.0, 2.0)];
-        let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let x = regression.invert(2.0).unwrap();
-        assert_eq!(x, 1.0);
+        let regression = IsotonicRegression::new_ascending(points).unwrap();
+        let owned_points = regression.into_points();
+        assert_eq!(owned_points.len(), 3);
+        assert_eq!(*owned_points[0].x(), 0.0);
+        assert_eq!(*owned_points[2].x(), 2.0);
     }
 
     #[test]
@@ -840,32 +718,12 @@ mod tests {
         ];
 
         let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let sorted_points = regression.get_points_sorted();
+        let sorted_points = regression.get_points();
 
         assert_eq!(sorted_points.len(), 4);
         assert_eq!(*sorted_points[0].y(), 1.0);
         assert_eq!(*sorted_points[1].y(), 1.75);
         assert_eq!(*sorted_points[2].y(), 1.75);
         assert_eq!(*sorted_points[3].y(), 3.0);
-
-        // Interpolation should work the same
-        let y = regression.interpolate(1.5).unwrap();
-        assert_eq!(y, 1.75);
-    }
-
-    #[test]
-    fn test_unit_weight_invert() {
-        let points: Vec<Point<f64, UnitWeight>> = vec![
-            Point::new_with_weight(0.0, 1.0, UnitWeight),
-            Point::new_with_weight(1.0, 2.0, UnitWeight),
-            Point::new_with_weight(2.0, 1.5, UnitWeight),
-            Point::new_with_weight(3.0, 3.0, UnitWeight),
-        ];
-
-        let regression = IsotonicRegression::new_ascending(&points).unwrap();
-        let test_x = 1.5;
-        let y = regression.interpolate(test_x).unwrap();
-        let inverted_x = regression.invert(y).unwrap();
-        assert!((inverted_x - test_x).abs() < 0.01);
     }
 }
