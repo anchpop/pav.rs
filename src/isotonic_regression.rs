@@ -29,7 +29,7 @@ pub struct IsotonicRegression<T: Coordinate, W: Weight = f64> {
 struct Centroid<T: Coordinate> {
     sum_x: T,
     sum_y: T,
-    sum_weight: f64,
+    sum_weight: T,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -146,12 +146,12 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
 
         let mut sum_x = T::zero();
         let mut sum_y = T::zero();
-        let mut sum_weight = 0.0;
+        let mut sum_weight = T::zero();
         for point in points {
-            let w = T::from_float(point.weight());
-            sum_x = sum_x + *point.x() * w;
-            sum_y = sum_y + *point.y() * w;
-            sum_weight += point.weight();
+            let w: T = point.weight.to_coord();
+            sum_x += *point.x() * w;
+            sum_y += *point.y() * w;
+            sum_weight += w;
         }
 
         let mut isotonic_points = isotonic(points, direction);
@@ -290,12 +290,12 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     /// assert_eq!(*centroid.y(), 1.875);
     /// ```
     pub fn get_centroid_point(&self) -> Option<Point<T, W>> {
-        if self.centroid_point.sum_weight == 0.0 {
+        if self.centroid_point.sum_weight == T::zero() {
             None
         } else {
             Some(Point::new_with_weight(
-                self.centroid_point.sum_x / T::from_float(self.centroid_point.sum_weight),
-                self.centroid_point.sum_y / T::from_float(self.centroid_point.sum_weight),
+                self.centroid_point.sum_x / self.centroid_point.sum_weight,
+                self.centroid_point.sum_y / self.centroid_point.sum_weight,
                 W::unit(),
             ))
         }
@@ -322,9 +322,10 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
                     || (!point.x().is_sign_negative() && !point.y().is_sign_negative()),
                 "With intersect_origin = true, all points must be >= 0 on both x and y axes"
             );
-            self.centroid_point.sum_x += *point.x() * T::from_float(point.weight());
-            self.centroid_point.sum_y += *point.y() * T::from_float(point.weight());
-            self.centroid_point.sum_weight += point.weight();
+            let w: T = point.weight.to_coord();
+            self.centroid_point.sum_x += *point.x() * w;
+            self.centroid_point.sum_y += *point.y() * w;
+            self.centroid_point.sum_weight += w;
         }
 
         let mut new_points = self.points.clone();
@@ -356,11 +357,10 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
                     || (!point.x().is_sign_negative() && !point.y().is_sign_negative()),
                 "With intersect_origin = true, all points must be >= 0 on both x and y axes"
             );
-            self.centroid_point.sum_x =
-                self.centroid_point.sum_x - *point.x() * T::from_float(point.weight());
-            self.centroid_point.sum_y =
-                self.centroid_point.sum_y - *point.y() * T::from_float(point.weight());
-            self.centroid_point.sum_weight -= point.weight();
+            let w: T = point.weight.to_coord();
+            self.centroid_point.sum_x = self.centroid_point.sum_x - *point.x() * w;
+            self.centroid_point.sum_y = self.centroid_point.sum_y - *point.y() * w;
+            self.centroid_point.sum_weight = self.centroid_point.sum_weight - w;
         }
 
         let mut new_points = self.points.clone();
@@ -393,7 +393,7 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     /// assert_eq!(regression.len(), 4);
     /// ```
     pub fn len(&self) -> usize {
-        self.centroid_point.sum_weight.round() as usize
+        self.centroid_point.sum_weight.to_float().round() as usize
     }
 
     /// Checks if the regression is empty.
@@ -408,7 +408,7 @@ impl<T: Coordinate, W: Weight> IsotonicRegression<T, W> {
     /// ```
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.centroid_point.sum_weight == 0.0
+        self.centroid_point.sum_weight == T::zero()
     }
 
     /// Find the _x_ value that would produce the given `at_y` value, or None if the regression is empty.
@@ -537,11 +537,11 @@ fn isotonic<T: Coordinate, W: Weight>(
     // Single-pass stack-based PAV algorithm.
     // Each pool is (start_index, end_index, sum_y_weighted, sum_weight).
     // We process points left-to-right, merging adjacent pools that violate monotonicity.
-    let mut pools: Vec<(usize, usize, T, f64)> = Vec::with_capacity(n);
+    let mut pools: Vec<(usize, usize, T, T)> = Vec::with_capacity(n);
 
     for i in 0..n {
-        let wy = *result[i].y() * T::from_float(result[i].weight());
-        let w = result[i].weight();
+        let w: T = result[i].weight.to_coord();
+        let wy = *result[i].y() * w;
         pools.push((i, i + 1, wy, w));
 
         // Merge backwards while monotonicity is violated
@@ -550,8 +550,8 @@ fn isotonic<T: Coordinate, W: Weight>(
             let (_, _, sum_y1, w1) = pools[len - 2];
             let (_, _, sum_y2, w2) = pools[len - 1];
 
-            let avg1 = sum_y1 / T::from_float(w1);
-            let avg2 = sum_y2 / T::from_float(w2);
+            let avg1 = sum_y1 / w1;
+            let avg2 = sum_y2 / w2;
 
             let violates = match direction {
                 Direction::Ascending => avg1 > avg2,
@@ -572,7 +572,7 @@ fn isotonic<T: Coordinate, W: Weight>(
 
     // Apply pooled y-values back to all points
     for &(start, end, sum_y, sum_w) in &pools {
-        let new_y = sum_y / T::from_float(sum_w);
+        let new_y = sum_y / sum_w;
         for point in result[start..end].iter_mut() {
             point.y = new_y;
         }

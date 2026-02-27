@@ -39,11 +39,7 @@ impl<T: Coordinate> Point<T> {
     /// assert_eq!(point.weight(), 1.0);
     /// ```
     pub fn new(x: T, y: T) -> Point<T> {
-        Point {
-            x,
-            y,
-            weight: 1.0,
-        }
+        Point { x, y, weight: 1.0 }
     }
 }
 
@@ -109,7 +105,7 @@ impl<T: Coordinate, W: Weight> Point<T, W> {
     /// assert_eq!(point.weight(), 1.0);
     /// ```
     pub fn weight(&self) -> f64 {
-        self.weight.to_f64()
+        self.weight.to_coord::<f64>()
     }
 
     /// Merges this point with another point, updating only the y-coordinate and weight.
@@ -128,13 +124,12 @@ impl<T: Coordinate, W: Weight> Point<T, W> {
     /// assert_eq!(point1.weight(), 2.0);
     /// ```
     pub fn merge_with(&mut self, other: &Point<T, W>) {
-        let self_w = self.weight.to_f64();
-        let other_w = other.weight.to_f64();
+        let self_w: T = self.weight.to_coord();
+        let other_w: T = other.weight.to_coord();
         let total_weight = self_w + other_w;
         // Only update y-coordinate, preserve x
-        self.y = (self.y * T::from_float(self_w) + other.y * T::from_float(other_w))
-            / T::from_float(total_weight);
-        self.weight = W::from_f64(total_weight);
+        self.y = (self.y * self_w + other.y * other_w) / total_weight;
+        self.weight = W::from_coord(total_weight);
     }
 }
 

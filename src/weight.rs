@@ -1,3 +1,4 @@
+use crate::coordinate::Coordinate;
 use serde::Serialize;
 use std::fmt::Debug;
 
@@ -8,23 +9,23 @@ use std::fmt::Debug;
 pub trait Weight: Copy + Clone + Debug + PartialEq + Serialize {
     /// Returns the unit weight (equivalent to 1.0).
     fn unit() -> Self;
-    /// Converts the weight to `f64` for arithmetic.
-    fn to_f64(&self) -> f64;
-    /// Creates a weight from an `f64` value.
+    /// Convert weight directly to a Coordinate type, bypassing f64.
+    fn to_coord<T: Coordinate>(&self) -> T;
+    /// Creates a weight from a Coordinate value.
     ///
     /// For [`UnitWeight`], this ignores the value and returns `UnitWeight`.
-    fn from_f64(value: f64) -> Self;
+    fn from_coord<T: Coordinate>(value: T) -> Self;
 }
 
 impl Weight for f64 {
     fn unit() -> Self {
         1.0
     }
-    fn to_f64(&self) -> f64 {
-        *self
+    fn to_coord<T: Coordinate>(&self) -> T {
+        T::from_float(*self)
     }
-    fn from_f64(value: f64) -> Self {
-        value
+    fn from_coord<T: Coordinate>(value: T) -> Self {
+        value.to_float()
     }
 }
 
@@ -40,10 +41,10 @@ impl Weight for UnitWeight {
     fn unit() -> Self {
         UnitWeight
     }
-    fn to_f64(&self) -> f64 {
-        1.0
+    fn to_coord<T: Coordinate>(&self) -> T {
+        T::one()
     }
-    fn from_f64(_value: f64) -> Self {
+    fn from_coord<T: Coordinate>(_value: T) -> Self {
         UnitWeight
     }
 }

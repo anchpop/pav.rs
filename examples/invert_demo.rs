@@ -5,10 +5,10 @@ fn main() {
     // Lower prices generally lead to more sales (descending relationship)
     let data = vec![
         Point::new(10.0_f64, 100.0), // At $10, we sell 100 units
-        Point::new(15.0, 80.0),  // At $15, we sell 80 units
-        Point::new(20.0, 85.0),  // At $20, we sell 85 units (noise in data)
-        Point::new(25.0, 60.0),  // At $25, we sell 60 units
-        Point::new(30.0, 40.0),  // At $30, we sell 40 units
+        Point::new(15.0, 80.0),      // At $15, we sell 80 units
+        Point::new(20.0, 85.0),      // At $20, we sell 85 units (noise in data)
+        Point::new(25.0, 60.0),      // At $25, we sell 60 units
+        Point::new(30.0, 40.0),      // At $30, we sell 40 units
     ];
 
     let regression = IsotonicRegression::new_descending(&data).unwrap();
