@@ -539,9 +539,9 @@ fn isotonic<T: Coordinate, W: Weight>(
     // We process points left-to-right, merging adjacent pools that violate monotonicity.
     let mut pools: Vec<(usize, usize, T, T)> = Vec::with_capacity(n);
 
-    for i in 0..n {
-        let w: T = result[i].weight.to_coord();
-        let wy = *result[i].y() * w;
+    for (i, result) in result.iter().enumerate().take(n) {
+        let w: T = result.weight.to_coord();
+        let wy = *result.y() * w;
         pools.push((i, i + 1, wy, w));
 
         // Merge backwards while monotonicity is violated
