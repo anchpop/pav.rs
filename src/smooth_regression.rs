@@ -1,5 +1,6 @@
 use crate::coordinate::Coordinate;
 use crate::isotonic_regression::IsotonicRegression;
+use crate::weight::Weight;
 use serde::Serialize;
 
 /// A smoothed regression using box filter on an isotonic regression.
@@ -42,8 +43,8 @@ impl<T: Coordinate> SmoothRegression<T> {
     /// let regression = IsotonicRegression::new_ascending(&points).unwrap();
     /// let smooth = SmoothRegression::from_regression(&regression, 0.2);
     /// ```
-    pub fn from_regression(
-        regression: &IsotonicRegression<T>,
+    pub fn from_regression<W: Weight>(
+        regression: &IsotonicRegression<T, W>,
         window_half_width: T,
     ) -> SmoothRegression<T> {
         let points = regression.get_points_sorted();
@@ -290,10 +291,7 @@ struct CumulativeIntegral<T: Coordinate> {
 }
 
 impl<T: Coordinate> CumulativeIntegral<T> {
-    fn new<P>(points: &[P]) -> Self
-    where
-        P: AsRef<crate::point::Point<T>>,
-    {
+    fn new<W: Weight>(points: &[crate::point::Point<T, W>]) -> Self {
         let n = points.len();
         let mut xs = Vec::with_capacity(n);
         let mut ys = Vec::with_capacity(n);
@@ -302,9 +300,8 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         cumulative_areas.push(T::zero());
 
         for (i, point) in points.iter().enumerate() {
-            let p = point.as_ref();
-            xs.push(*p.x());
-            ys.push(*p.y());
+            xs.push(*point.x());
+            ys.push(*point.y());
 
             if i > 0 {
                 let dx = xs[i] - xs[i - 1];
@@ -375,12 +372,6 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         let area = dx * avg_y;
 
         self.cumulative_areas[i] + area
-    }
-}
-
-impl<T: Coordinate> AsRef<crate::point::Point<T>> for crate::point::Point<T> {
-    fn as_ref(&self) -> &crate::point::Point<T> {
-        self
     }
 }
 

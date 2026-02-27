@@ -3,7 +3,7 @@ use pav_regression::{IsotonicRegression, Point, SmoothRegression};
 fn main() {
     // Create some data with sharp corners
     let points = vec![
-        Point::new(0.0, 0.0),
+        Point::new(0.0_f64, 0.0),
         Point::new(1.0, 1.0),
         Point::new(2.0, 1.0), // Flat section
         Point::new(3.0, 1.0),

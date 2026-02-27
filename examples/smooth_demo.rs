@@ -3,7 +3,7 @@ use pav_regression::{IsotonicRegression, Point, SmoothRegression};
 fn main() {
     // Example: Frequency-based measurements with some noise
     let measurements = vec![
-        Point::new(100.0, 10.0),
+        Point::new(100.0_f64, 10.0),
         Point::new(200.0, 25.0),
         Point::new(300.0, 35.0),
         Point::new(400.0, 42.0),

@@ -3,7 +3,7 @@ use pav_regression::{IsotonicRegression, Point};
 fn main() {
     // Simple ascending example
     let points = vec![
-        Point::new(0.0, 0.0),
+        Point::new(0.0_f64, 0.0),
         Point::new(1.0, 1.0),
         Point::new(2.0, 2.0),
         Point::new(3.0, 3.0),

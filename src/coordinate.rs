@@ -199,6 +199,52 @@ impl Coordinate for f64 {
     }
 }
 
+impl Coordinate for f32 {
+    fn zero() -> Self {
+        0.0
+    }
+
+    fn one() -> Self {
+        1.0
+    }
+
+    fn to_float(&self) -> f64 {
+        *self as f64
+    }
+
+    fn from_float(value: f64) -> Self {
+        value as f32
+    }
+
+    fn abs_diff(&self, other: &Self) -> Self {
+        (self - other).abs()
+    }
+
+    fn is_sign_negative(&self) -> bool {
+        *self < Self::zero()
+    }
+
+    fn average(&self, other: &Self) -> Self {
+        (self + other) / 2.0
+    }
+
+    fn abs(&self) -> Self {
+        f32::abs(*self)
+    }
+
+    fn sqrt(&self) -> Self {
+        f32::sqrt(*self)
+    }
+
+    fn max(&self, other: Self) -> Self {
+        f32::max(*self, other)
+    }
+
+    fn min(&self, other: Self) -> Self {
+        f32::min(*self, other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

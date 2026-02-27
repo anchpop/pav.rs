@@ -100,14 +100,14 @@
 //! use pav_regression::{Point, IsotonicRegression, SmoothRegression};
 //!
 //! let points = vec![
-//!     Point::new(100.0, 10.0),
+//!     Point::new(100.0_f64, 10.0),
 //!     Point::new(200.0, 25.0),
 //!     Point::new(300.0, 35.0),
 //! ];
 //! let regression = IsotonicRegression::new_ascending(&points).unwrap();
 //!
 //! // OLD WAY: Smooth at query time (3 lookups per query!)
-//! let base = 150.0;
+//! let base = 150.0_f64;
 //! let lower = regression.interpolate(base * 0.8).unwrap();
 //! let middle = regression.interpolate(base).unwrap();
 //! let upper = regression.interpolate(base * 1.2).unwrap();
@@ -125,6 +125,9 @@
 /// Module containing the `Coordinate` trait definition.
 pub mod coordinate;
 
+/// Module containing the `Weight` trait and `UnitWeight` type.
+pub mod weight;
+
 /// Module containing the `Point` struct definition.
 pub mod point;
 
@@ -138,3 +141,4 @@ pub use coordinate::Coordinate;
 pub use isotonic_regression::IsotonicRegression;
 pub use point::Point;
 pub use smooth_regression::SmoothRegression;
+pub use weight::{UnitWeight, Weight};
