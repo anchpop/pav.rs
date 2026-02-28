@@ -142,7 +142,7 @@ impl<T: Coordinate> SmoothRegression<T> {
         let x_max = *points.last().unwrap().x();
         let w = window_half_width;
         let two_w = T::from_float(2.0) * w;
-        let half = T::from_float(2.0);
+        let two = T::from_float(2.0);
 
         // Step 1: Build cumulative integral (O(n))
         let cumulative = CumulativeIntegral::new(&points);
@@ -221,7 +221,7 @@ impl<T: Coordinate> SmoothRegression<T> {
         for i in 0..num_segments {
             let b0 = boundaries[i];
             let b1 = boundaries[i + 1];
-            let mid = (b0 + b1) / half;
+            let mid = (b0 + b1) / two;
 
             // Boundary y at b1 (b0's y is already in boundary_ys[i])
             let em = cumulative.eval_at_cursor(&mut cur_bm, b1 - w);
@@ -234,7 +234,21 @@ impl<T: Coordinate> SmoothRegression<T> {
             let ep = cumulative.eval_at_cursor(&mut cur_mp, mid + w);
             let ym = (ep - em) / two_w;
 
-            coeffs.push(fit_quadratic(b0, boundary_ys[i], mid, ym, b1, y1));
+            // Fit quadratic in shifted coordinates: y = a*t² + b*t + c, where t = x - b0.
+            // This guarantees c = y0 exactly and avoids catastrophic cancellation
+            // when x values are large (especially important for f32).
+            let y0 = boundary_ys[i];
+            let h = b1 - b0;
+            let dy_m = ym - y0; // delta-y at midpoint (t = h/2)
+            let dy_1 = y1 - y0; // delta-y at right boundary (t = h)
+            let coeff = if h.abs() < T::from_float(1e-30) {
+                (T::zero(), T::zero(), y0)
+            } else {
+                let a = T::from_float(2.0) * (dy_1 - T::from_float(2.0) * dy_m) / (h * h);
+                let b = (T::from_float(4.0) * dy_m - dy_1) / h;
+                (a, b, y0)
+            };
+            coeffs.push(coeff);
         }
 
         SmoothRegression {
@@ -288,7 +302,8 @@ impl<T: Coordinate> SmoothRegression<T> {
         };
 
         let (a, b, c) = self.coeffs[i];
-        Some(a * x_clamped * x_clamped + b * x_clamped + c)
+        let t = x_clamped - self.boundaries[i];
+        Some(a * t * t + b * t + c)
     }
 
     /// Invert the smoothed function: given y, find x.
@@ -335,69 +350,50 @@ impl<T: Coordinate> SmoothRegression<T> {
         };
 
         let (a, b, c) = self.coeffs[i];
+        let x0 = self.boundaries[i];
 
+        // Coefficients are in shifted form: y = a*t² + b*t + c, where t = x - x0
         let epsilon = T::from_float(1e-12);
         if a.abs() < epsilon {
-            // Linear segment: y = bx + c
-            Some((y - c) / b)
+            // Linear segment: y = b*t + c → t = (y - c) / b
+            Some(x0 + (y - c) / b)
         } else {
-            // Quadratic: ax² + bx + (c - y) = 0
+            // Quadratic: a*t² + b*t + (c - y) = 0
             let c_shifted = c - y;
             let discriminant = b * b - T::from_float(4.0) * a * c_shifted;
 
             if discriminant < T::zero() {
-                // No real solution, this shouldn't happen for monotonic function
-                // Return the closest boundary point
                 return Some(T::zero());
             }
 
             let sqrt_disc = discriminant.sqrt();
             let two_a = T::from_float(2.0) * a;
 
-            // Compute both roots
-            let root1 = (-b + sqrt_disc) / two_a;
-            let root2 = (-b - sqrt_disc) / two_a;
+            // Roots in shifted coordinates, then convert back
+            let t1 = (-b + sqrt_disc) / two_a;
+            let t2 = (-b - sqrt_disc) / two_a;
+            let root1 = x0 + t1;
+            let root2 = x0 + t2;
 
             // Pick the root that's in bounds for this segment
-            // This works for both ascending and descending regressions
-            if i + 1 < self.boundaries.len() {
-                let x_lo = self.boundaries[i];
-                let x_hi = self.boundaries[i + 1];
-
-                if root1 >= x_lo && root1 <= x_hi {
-                    Some(root1)
-                } else if root2 >= x_lo && root2 <= x_hi {
-                    Some(root2)
-                } else {
-                    // Neither root is in bounds, return the closer one to segment center
-                    let center = (x_lo + x_hi) / T::from_float(2.0);
-                    let dist1 = (root1 - center).abs();
-                    let dist2 = (root2 - center).abs();
-                    if dist1 < dist2 {
-                        Some(root1)
-                    } else {
-                        Some(root2)
-                    }
-                }
+            let x_hi = if i + 1 < self.boundaries.len() {
+                self.boundaries[i + 1]
             } else {
-                // Last segment, use the valid domain bounds
-                let x_lo = self.boundaries[i];
-                let x_hi = self.x_max;
+                self.x_max
+            };
 
-                if root1 >= x_lo && root1 <= x_hi {
+            if root1 >= x0 && root1 <= x_hi {
+                Some(root1)
+            } else if root2 >= x0 && root2 <= x_hi {
+                Some(root2)
+            } else {
+                let center = (x0 + x_hi) / T::from_float(2.0);
+                let dist1 = (root1 - center).abs();
+                let dist2 = (root2 - center).abs();
+                if dist1 < dist2 {
                     Some(root1)
-                } else if root2 >= x_lo && root2 <= x_hi {
-                    Some(root2)
                 } else {
-                    // Return the closer one
-                    let center = (x_lo + x_hi) / T::from_float(2.0);
-                    let dist1 = (root1 - center).abs();
-                    let dist2 = (root2 - center).abs();
-                    if dist1 < dist2 {
-                        Some(root1)
-                    } else {
-                        Some(root2)
-                    }
+                    Some(root2)
                 }
             }
         }
@@ -418,7 +414,12 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         let mut ys = Vec::with_capacity(n);
         let mut cumulative_areas = Vec::with_capacity(n);
 
-        cumulative_areas.push(T::zero());
+        // Neumaier summation for the running cumulative area.
+        // Prevents drift when many small trapezoid areas are added to a
+        // large running total (especially important for f32).
+        let mut sum = T::zero();
+        let mut comp = T::zero(); // compensation term
+        cumulative_areas.push(sum);
 
         for (i, point) in points.iter().enumerate() {
             xs.push(*point.x());
@@ -428,7 +429,15 @@ impl<T: Coordinate> CumulativeIntegral<T> {
                 let dx = xs[i] - xs[i - 1];
                 let avg_y = (ys[i] + ys[i - 1]) / T::from_float(2.0);
                 let area = dx * avg_y;
-                cumulative_areas.push(cumulative_areas[i - 1] + area);
+
+                let t = sum + area;
+                if sum.abs() >= area.abs() {
+                    comp = comp + ((sum - t) + area);
+                } else {
+                    comp = comp + ((area - t) + sum);
+                }
+                sum = t;
+                cumulative_areas.push(sum + comp);
             }
         }
 
@@ -479,36 +488,6 @@ impl<T: Coordinate> CumulativeIntegral<T> {
     }
 }
 
-/// Fit a quadratic through three points
-fn fit_quadratic<T: Coordinate>(x0: T, y0: T, x1: T, y1: T, x2: T, y2: T) -> (T, T, T) {
-    // Solve the system:
-    // y0 = a*x0^2 + b*x0 + c
-    // y1 = a*x1^2 + b*x1 + c
-    // y2 = a*x2^2 + b*x2 + c
-
-    let x0_sq = x0 * x0;
-    let x1_sq = x1 * x1;
-    let x2_sq = x2 * x2;
-
-    // Using Lagrange interpolation formulas for quadratic
-    let denom = (x0 - x1) * (x0 - x2) * (x1 - x2);
-
-    if denom.abs() < T::from_float(1e-12) {
-        // Points are colinear, return linear fit
-        let b = (y2 - y0) / (x2 - x0);
-        let c = y0 - b * x0;
-        return (T::zero(), b, c);
-    }
-
-    let a = (y0 * (x1 - x2) + y1 * (x2 - x0) + y2 * (x0 - x1)) / denom;
-    let b = (y0 * (x1_sq - x2_sq) + y1 * (x2_sq - x0_sq) + y2 * (x0_sq - x1_sq)) / (-denom);
-    let c = (y0 * (x1_sq * x2 - x2_sq * x1)
-        + y1 * (x2_sq * x0 - x0_sq * x2)
-        + y2 * (x0_sq * x1 - x1_sq * x0))
-        / denom;
-
-    (a, b, c)
-}
 
 #[cfg(test)]
 mod tests {
