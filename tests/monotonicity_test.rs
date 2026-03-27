@@ -1,7 +1,7 @@
-use pav_regression::isotonic_regression::Direction;
-use pav_regression::{IsotonicRegression, Point, SmoothRegression, UnitWeight};
-use pav_regression::weight::Weight;
 use pav_regression::coordinate::Coordinate;
+use pav_regression::isotonic_regression::Direction;
+use pav_regression::weight::Weight;
+use pav_regression::{IsotonicRegression, Point, SmoothRegression, UnitWeight};
 
 fn check_isotonic_monotonic<T: Coordinate + std::fmt::Display, W: Weight>(
     points: &[Point<T, W>],
@@ -41,8 +41,16 @@ fn check_smooth_monotonic<T: Coordinate + std::fmt::Display, W: Weight>(
 ) {
     let smooth = SmoothRegression::new(points, Direction::Ascending, window);
 
-    let x_min = *points.iter().min_by(|a, b| a.x().partial_cmp(b.x()).unwrap()).unwrap().x();
-    let x_max = *points.iter().max_by(|a, b| a.x().partial_cmp(b.x()).unwrap()).unwrap().x();
+    let x_min = *points
+        .iter()
+        .min_by(|a, b| a.x().partial_cmp(b.x()).unwrap())
+        .unwrap()
+        .x();
+    let x_max = *points
+        .iter()
+        .max_by(|a, b| a.x().partial_cmp(b.x()).unwrap())
+        .unwrap()
+        .x();
 
     let mut prev_y = T::from_float(f64::NEG_INFINITY);
     let mut violations = 0;

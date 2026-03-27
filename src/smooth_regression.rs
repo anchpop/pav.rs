@@ -2,6 +2,7 @@ use crate::coordinate::Coordinate;
 use crate::isotonic_regression::{isotonic, isotonic_presorted, Direction, IsotonicRegression};
 use crate::point::Point;
 use crate::weight::Weight;
+use eytzinger::SliceExt;
 use serde::Serialize;
 
 /// A smoothed regression using box filter on an isotonic regression.
@@ -150,7 +151,7 @@ impl<T: Coordinate> SmoothRegression<T> {
         // Step 2: Generate sorted boundaries via 2-way merge of (x_i - w) and (x_i + w)
         // These are the only true knots of the box-filter convolution; x_i itself is
         // not a knot so including it just adds redundant segments.
-        let boundaries = {
+        let mut boundaries = {
             let n = points.len();
             let mut result = Vec::with_capacity(2 * n);
             let (mut ia, mut ib) = (0usize, 0usize);
@@ -251,6 +252,39 @@ impl<T: Coordinate> SmoothRegression<T> {
             coeffs.push(coeff);
         }
 
+        // Eytzingerize boundaries and parallel arrays for cache-friendly lookup.
+        //
+        // In sorted order: coeffs[i] is for segment [boundaries[i], boundaries[i+1]).
+        // The last boundary (index n-1) has no segment, so we pad coeffs with a dummy
+        // to make it the same length as boundaries, then permute both identically.
+        // After eytzingerization, interpolate finds the highest boundary <= x via
+        // eytzinger search and uses the coeff at the same index.
+        let n = boundaries.len();
+        if n > 1 {
+            // Pad coeffs to length n: the last sorted boundary has no segment.
+            // Use a constant coeff that returns boundary_ys[n-1] when t=0.
+            let last_y = *boundary_ys.last().unwrap();
+            coeffs.push((T::zero(), T::zero(), last_y));
+            debug_assert_eq!(coeffs.len(), n);
+
+            // Build a (boundary, coeff, boundary_y) tuple array sorted by boundary,
+            // then eytzingerize it as a unit.
+            let mut combined: Vec<(T, (T, T, T), T)> = boundaries
+                .iter()
+                .zip(coeffs.iter())
+                .zip(boundary_ys.iter())
+                .map(|((&b, &c), &y)| (b, c, y))
+                .collect();
+            combined.eytzingerize(&mut eytzinger::permutation::InplacePermutator);
+
+            // Unpack back
+            for (i, (b, c, y)) in combined.into_iter().enumerate() {
+                boundaries[i] = b;
+                coeffs[i] = c;
+                boundary_ys[i] = y;
+            }
+        }
+
         SmoothRegression {
             boundaries,
             coeffs,
@@ -285,20 +319,14 @@ impl<T: Coordinate> SmoothRegression<T> {
         // Clamp x to the valid domain
         let x_clamped = x.max(self.x_min).min(self.x_max);
 
-        // Binary search to find segment
-        // Find the last boundary <= x
-        let i = match self
+        // Eytzinger search to find the segment: highest boundary <= x_clamped
+        let (lte, _gt) = self
             .boundaries
-            .binary_search_by(|&b| b.partial_cmp(&x_clamped).unwrap())
-        {
-            Ok(idx) => idx.min(self.coeffs.len() - 1),
-            Err(idx) => {
-                if idx == 0 {
-                    0
-                } else {
-                    (idx - 1).min(self.coeffs.len() - 1)
-                }
-            }
+            .eytzinger_interpolative_search_by(|&b| b.partial_cmp(&x_clamped).unwrap());
+
+        let i = match lte {
+            Some(idx) => idx.min(self.coeffs.len() - 1),
+            None => 0,
         };
 
         let (a, b, c) = self.coeffs[i];
@@ -327,26 +355,32 @@ impl<T: Coordinate> SmoothRegression<T> {
             return None;
         }
 
-        // Determine if y values are ascending or descending
+        // boundary_ys is in eytzinger order (same permutation as boundaries).
+        // For ascending regressions, boundary_ys in sorted order is ascending.
+        // For descending, it's descending. The eytzinger search expects the
+        // underlying sorted order to be ascending, so we flip the comparison
+        // for descending regressions.
         let ascending = if self.boundary_ys.len() >= 2 {
-            self.boundary_ys[self.boundary_ys.len() - 1] >= self.boundary_ys[0]
+            // Check first and last in sorted order by looking at x_min/x_max boundaries
+            let y_at_min = self.interpolate(self.x_min).unwrap_or(T::zero());
+            let y_at_max = self.interpolate(self.x_max).unwrap_or(T::zero());
+            y_at_max >= y_at_min
         } else {
             true
         };
 
-        // Binary search on y-values to find segment
-        // For descending y values, we need to reverse the comparison
-        let i = if ascending {
+        let (lte, _gt) = if ascending {
             self.boundary_ys
-                .binary_search_by(|&by| by.partial_cmp(&y).unwrap())
-                .unwrap_or_else(|i| i.saturating_sub(1))
-                .min(self.coeffs.len() - 1)
+                .eytzinger_interpolative_search_by(|&by| by.partial_cmp(&y).unwrap())
         } else {
-            // For descending, reverse the comparison
+            // For descending, reverse: find highest by >= y (i.e., search with flipped comparison)
             self.boundary_ys
-                .binary_search_by(|&by| y.partial_cmp(&by).unwrap())
-                .unwrap_or_else(|i| i.saturating_sub(1))
-                .min(self.coeffs.len() - 1)
+                .eytzinger_interpolative_search_by(|&by| y.partial_cmp(&by).unwrap())
+        };
+
+        let i = match lte {
+            Some(idx) => idx.min(self.coeffs.len() - 1),
+            None => 0,
         };
 
         let (a, b, c) = self.coeffs[i];
@@ -375,19 +409,18 @@ impl<T: Coordinate> SmoothRegression<T> {
             let root1 = x0 + t1;
             let root2 = x0 + t2;
 
-            // Pick the root that's in bounds for this segment
-            let x_hi = if i + 1 < self.boundaries.len() {
-                self.boundaries[i + 1]
-            } else {
-                self.x_max
-            };
+            // Pick the root that's in bounds
+            // We don't have easy access to the "next boundary in sorted order" from
+            // eytzinger layout, so use domain bounds as fallback
+            let x_lo = x0;
+            let x_hi = self.x_max;
 
-            if root1 >= x0 && root1 <= x_hi {
+            if root1 >= x_lo && root1 <= x_hi {
                 Some(root1)
-            } else if root2 >= x0 && root2 <= x_hi {
+            } else if root2 >= x_lo && root2 <= x_hi {
                 Some(root2)
             } else {
-                let center = (x0 + x_hi) / T::from_float(2.0);
+                let center = (x_lo + x_hi) / T::from_float(2.0);
                 let dist1 = (root1 - center).abs();
                 let dist2 = (root2 - center).abs();
                 if dist1 < dist2 {
@@ -464,8 +497,7 @@ impl<T: Coordinate> CumulativeIntegral<T> {
             return self.ys[0] * (x - x_min);
         }
         if x >= x_max {
-            return *self.cumulative_areas.last().unwrap()
-                + *self.ys.last().unwrap() * (x - x_max);
+            return *self.cumulative_areas.last().unwrap() + *self.ys.last().unwrap() * (x - x_max);
         }
 
         // Advance cursor so that xs[cursor] <= x < xs[cursor+1]
@@ -487,7 +519,6 @@ impl<T: Coordinate> CumulativeIntegral<T> {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -90,7 +90,8 @@ fn check_f64_exact<W: Weight>(points: &[Point<f64, W>], window: f64, label: &str
     assert!(
         max_err < 1e-10,
         "[{}] max error {:.2e} — expected near-exact agreement",
-        label, max_err
+        label,
+        max_err
     );
 }
 
@@ -163,7 +164,9 @@ fn check_f32_approximate<W: Weight>(points: &[Point<f32, W>], window: f32, tol: 
     assert!(
         max_err < tol,
         "[{}] max error {:.2e} exceeds tol {:.2e}",
-        label, max_err, tol
+        label,
+        max_err,
+        tol
     );
 }
 

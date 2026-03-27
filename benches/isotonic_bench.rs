@@ -142,8 +142,7 @@ fn bench_smooth_from_regression(c: &mut Criterion) {
         let points = generate_sorted_noisy_ascending_points(size);
         group.bench_function(format!("f64_weight/n={size}"), |b| {
             b.iter(|| {
-                let reg =
-                    IsotonicRegression::new_ascending_sorted(black_box(&points)).unwrap();
+                let reg = IsotonicRegression::new_ascending_sorted(black_box(&points)).unwrap();
                 SmoothRegression::from_regression(reg, 5.0)
             })
         });
@@ -167,19 +166,13 @@ fn bench_smooth_new_direct(c: &mut Criterion) {
     for size in [100, 1_000, 10_000] {
         let points = generate_sorted_noisy_ascending_points(size);
         group.bench_function(format!("f64_weight/n={size}"), |b| {
-            b.iter(|| {
-                SmoothRegression::new_sorted(black_box(&points), Direction::Ascending, 5.0)
-            })
+            b.iter(|| SmoothRegression::new_sorted(black_box(&points), Direction::Ascending, 5.0))
         });
 
         let points_unit = generate_sorted_noisy_ascending_points_unit(size);
         group.bench_function(format!("f64_unit/n={size}"), |b| {
             b.iter(|| {
-                SmoothRegression::new_sorted(
-                    black_box(&points_unit),
-                    Direction::Ascending,
-                    5.0,
-                )
+                SmoothRegression::new_sorted(black_box(&points_unit), Direction::Ascending, 5.0)
             })
         });
     }

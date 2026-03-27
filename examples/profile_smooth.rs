@@ -81,6 +81,9 @@ fn main() {
 
         println!("  boundaries (x-w,x,x+w): {}", boundaries3.len());
         println!("  boundaries (x-w,x+w):   {}", boundaries2.len());
-        println!("  segment reduction:       {:.0}%", (1.0 - boundaries2.len() as f64 / boundaries3.len() as f64) * 100.0);
+        println!(
+            "  segment reduction:       {:.0}%",
+            (1.0 - boundaries2.len() as f64 / boundaries3.len() as f64) * 100.0
+        );
     }
 }
