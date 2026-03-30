@@ -195,6 +195,18 @@ impl<T: Coordinate> SmoothRegression<T> {
                     result.push(val);
                 }
             }
+            // Ensure x_min and x_max are always included as boundaries.
+            // When the smoothing window is large relative to the domain, all
+            // x_i - w values may fall below x_min (and x_i + w above x_max),
+            // leaving no boundaries near the domain edges. Without these anchors,
+            // queries near the edges fall back to distant segments and evaluate
+            // quadratics far outside their intended range.
+            if result.first().is_none_or(|&first| first != x_min) {
+                result.insert(0, x_min);
+            }
+            if result.last().is_none_or(|&last| last != x_max) {
+                result.push(x_max);
+            }
             result
         };
 
